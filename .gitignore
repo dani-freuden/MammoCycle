@@ -1,0 +1,6 @@
+__pycache__
+.env
+/debug
+/runs
+/.vscode
+/.pytest_cache
