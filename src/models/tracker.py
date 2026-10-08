@@ -36,14 +36,31 @@ def patch_grid(top_left: Tensor, height: int, width: int, stride: int) -> Tensor
     return top_left[:, None].float() + cell_centers(height, width, stride, top_left.device)
 
 
-def affinity(query: Tensor, frame: Tensor, temperature: float) -> Tensor:
+def affinity(query: Tensor, frame: Tensor, temperature: float, penalty: Tensor | None = None) -> Tensor:
     """For each query cell, a probability distribution over the frame cells.
 
-    query [B, C, hq, wq], frame [B, C, hf, wf] -> [B, hq * wq, hf * wf], each row sums to one.
+    query [B, C, hq, wq], frame [B, C, hf, wf] -> [B, hq * wq, hf * wf], each row sums to one. penalty, broadcastable to
+    the output, is subtracted from the cosine similarity before the temperature.
     """
-    logits = torch.einsum('bcq,bcf->bqf', query.flatten(2), frame.flatten(2)) / temperature
+    similarity = torch.einsum('bcq,bcf->bqf', query.flatten(2), frame.flatten(2))
+    if penalty is not None:
+        similarity = similarity - penalty
 
-    return logits.softmax(dim=-1)
+    return (similarity / temperature).softmax(dim=-1)
+
+
+def read_anatomy(anatomy: Tensor | None, points: Tensor, stride: int) -> Tensor | None:
+    """Bilinearly read anatomical maps [B, 2, hf, wf] at pixel positions points [B, 2]. Returns [B, 2].
+
+    No maps give None. Positions off the frame read the nearest border cell.
+    """
+    if anatomy is None:
+        return None
+
+    size = points.new_tensor([anatomy.shape[-1] * stride, anatomy.shape[-2] * stride])  # (width, height) in pixels
+    normalized = (2 * points / size - 1)[:, None, None]  # [B, 1, 1, 2]
+
+    return F.grid_sample(anatomy, normalized, mode='bilinear', padding_mode='border', align_corners=False)[..., 0, 0]
 
 
 def fit_rigid(layout: Tensor, points: Tensor, max_rotation: float, ridge: float = 0.01) -> tuple[Tensor, Tensor]:
@@ -120,6 +137,7 @@ class Hop:
     points: Tensor  # [B, hq * wq, 2] each cell's expected position before the fit
     center: Tensor  # [B, 2]
     angle: Tensor  # [B] radians
+    anatomy: Tensor | None = None  # [B, 2] anatomical coordinate at center, when the frame has a map
     diagnostics: dict[str, Tensor] | None = None  # see localizer_diagnostics
 
 
@@ -130,24 +148,42 @@ class Tracker:
     Each query cell gets a probability map over the frame cells, which is reduced to its expected position. A shift
     and a rotation are fitted to those points in closed form, and the frame's features are read at the fitted grid.
 
+    Anatomical prior: given the anatomical coordinate a_q of the query patch centre and a map of a_j over the frame
+    cells (src/utils/anatomy.py), every cell's similarity is lowered by anatomical_weight * |a_q - a_j|^2 before the
+    temperature. Both are fixed metadata, so gradients reach the features only through the softmax. It multiplies
+    the probabilities by a Gaussian in anatomical units of sigma = sqrt(temperature / (2 * anatomical_weight)): 0.39 for
+    0.1 and 0.12 for 1 at temperature 0.03, 1 being the distance from the centroid to the skin.
+
     TODO(coarse-to-fine): match globally on this grid, then refine at stride 4 in a small window around the match.
     TODO(confidence weighting): weight each cell in fit_rigid by its peak probability.
     """
     stride: int = 8
     temperature: float = 0.03
     max_rotation_degrees: float = 20.0
+    anatomical_weight: float = 0.0
 
-    def __call__(self, query: Tensor, frame: Tensor, diagnostics: bool = False) -> Hop:
-        """query [B, C, hq, wq] and frame [B, C, hf, wf], both L2-normalized."""
+    def __call__(self, query: Tensor, frame: Tensor, query_anatomy: Tensor | None = None,
+                 frame_anatomy: Tensor | None = None, diagnostics: bool = False) -> Hop:
+        """query [B, C, hq, wq] and frame [B, C, hf, wf], both L2-normalized.
+
+        For the anatomical prior, query_anatomy [B, 2] is a_q at the query patch centre and frame_anatomy
+        [B, 2, hf, wf] is a_j at every frame cell. Without them the prior is off.
+        """
         batch, _, height, width = query.shape
         layout = patch_layout(height, width, self.stride, query.device).expand(batch, -1, -1)
         frame_centers = cell_centers(frame.shape[-2], frame.shape[-1], self.stride, frame.device)
 
-        probability = affinity(query, frame, self.temperature)
+        penalty = None
+        if frame_anatomy is not None:
+            distance = (frame_anatomy.flatten(2) - query_anatomy[:, :, None]).square().sum(dim=1)  # [B, hf * wf]
+            penalty = self.anatomical_weight * distance[:, None]  # the same for every query cell
+
+        probability = affinity(query, frame, self.temperature, penalty)
         points = probability @ frame_centers  # each query cell's expected position
         center, angle = fit_rigid(layout, points, math.radians(self.max_rotation_degrees))
         grid = place_layout(layout, center, angle)
-        hop = Hop(sample_features(frame, grid, self.stride, (height, width)), grid, points, center, angle)
+        hop = Hop(sample_features(frame, grid, self.stride, (height, width)), grid, points, center, angle,
+                  read_anatomy(frame_anatomy, center.detach(), self.stride))
 
         if diagnostics:
             hop.diagnostics = localizer_diagnostics(probability.detach(), frame_centers, points.detach(), grid.detach())
@@ -155,7 +191,8 @@ class Tracker:
         return hop
 
 
-def run_cycles(tracker: Tracker, query: Tensor, frames: list[Tensor]) -> tuple[dict[str, Tensor], list[Hop]]:
+def run_cycles(tracker: Tracker, query: Tensor, frames: list[Tensor], query_anatomy: Tensor | None = None,
+               frame_anatomy: list[Tensor] | None = None) -> tuple[dict[str, Tensor], list[Hop]]:
     """Run every cycle that starts from the query patch in the last frame.
 
     query [B, C, hq, wq] is the patch's features in the last frame; frames are T feature maps [B, C, hf, wf], oldest
@@ -166,28 +203,32 @@ def run_cycles(tracker: Tracker, query: Tensor, frames: list[Tensor]) -> tuple[d
     Returns where each cycle ends in the query frame, as a grid [B, hq * wq, 2], and the k first hops, first_hops[i - 1]
     into the i-th prior, for the similarity loss. first_hops[0] carries diagnostics. It makes 3k - 2 + k(k + 1) / 2
     tracker calls: 2, 7 and 13 for T = 2, 3 and 4.
+
+    For the anatomical prior, query_anatomy [B, 2] is a_q at the query patch centre and frame_anatomy the T maps
+    [B, 2, hf, wf]. Every later hop takes a_q where the previous hop landed.
     """
     last = len(frames) - 1
+    maps = frame_anatomy or [None] * len(frames)
 
     # Backward chain: query -> last - 1 -> last - 2 -> ... -> 0. chain[j] is the hop into frame last - 1 - j.
-    chain, features = [], query
+    chain, features, anatomy = [], query, query_anatomy
     for target in range(last - 1, -1, -1):
-        chain.append(tracker(features, frames[target], diagnostics=not chain))
-        features = chain[-1].features
+        chain.append(tracker(features, frames[target], anatomy, maps[target], diagnostics=not chain))
+        features, anatomy = chain[-1].features, chain[-1].anatomy
 
     cycles, first_hops = {}, []
     for length in range(1, last + 1):
         prior = last - length
-        first = chain[0] if length == 1 else tracker(query, frames[prior])
+        first = chain[0] if length == 1 else tracker(query, frames[prior], query_anatomy, maps[prior])
         first_hops.append(first)
-        cycles[f'skip_{length}'] = tracker(first.features, frames[last]).grid
+        cycles[f'skip_{length}'] = tracker(first.features, frames[last], first.anatomy, maps[last]).grid
 
         if length > 1:
             # Back along the chain to the prior, then forward through every frame in between.
-            features = chain[length - 1].features
+            features, anatomy = chain[length - 1].features, chain[length - 1].anatomy
             for target in range(prior + 1, last + 1):
-                hop = tracker(features, frames[target])
-                features = hop.features
+                hop = tracker(features, frames[target], anatomy, maps[target])
+                features, anatomy = hop.features, hop.anatomy
             cycles[f'long_{length}'] = hop.grid
 
     return cycles, first_hops

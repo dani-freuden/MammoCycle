@@ -28,7 +28,7 @@ class Record:
     exams: tuple[Exam, ...]  # sorted by date
 
 
-def load_records(data_dir: Path, splits: Iterable[Split]) -> dict[Split, list[Record]]:
+def load_records(data_dir: Path, splits: Iterable[Split], view: View = None) -> dict[Split, list[Record]]:
     """Read the prepared metadata.csv and group its images into records of at least two exams.
 
     Dates are shifted per patient for anonymization, so they are only comparable within a record.
@@ -40,6 +40,10 @@ def load_records(data_dir: Path, splits: Iterable[Split]) -> dict[Split, list[Re
     columns = (Column.SPLIT_GROUP, Column.PATIENT_ID, Column.LATERALITY, Column.VIEW,
                Column.EXAM_ID, Column.STUDY_DATE, Column.FILE_PATH)
     groups = defaultdict(list)
+    
+    # filter for only specifc view if chosen:
+    if view is not None:
+        df = df[df[str(Column.VIEW)] == str(view)]  
 
     for split, patient_id, side, view, exam_id, study_date, file_path in zip(*(df[str(c)] for c in columns)):
         exam = Exam(exam_id=exam_id, date=date.fromisoformat(study_date), path=data_dir / file_path)

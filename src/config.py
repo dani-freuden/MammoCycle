@@ -4,6 +4,7 @@ from pathlib import Path
 
 from pydantic import Field, model_validator
 
+from src.enums import View
 from src.utils.config import ConfigBase
 
 
@@ -14,6 +15,8 @@ class DataConfig(ConfigBase):
     height: int = 1024  # 512 x 320 is the fast setting
     width: int = 640  # canvas: ~90% of breasts fill the height at 1024; wider ones shrink to fit, never stretched
     tissue_threshold: float = 0.01  # background and padding are below it; see check_tissue_threshold.py
+    # TODO(MLO): null (every view) once src/utils/anatomy.py finds the nipple and centroid on MLO views.
+    view: Optional[View] = View.CC
 
     @model_validator(mode='after')
     def check_frame_size(self):
@@ -51,6 +54,9 @@ class ModuleConfig(ConfigBase):
     # 1024 x 640, where 0.05 gives 13.9 px. Re-check with scripts/misc/temperature_sweep.py when the encoder changes.
     temperature: float = 0.03
     max_rotation_degrees: float = 20.0
+    # Lowers each candidate's cosine similarity by anatomical_weight * |a_q - a_j|^2 before the temperature; 0 is off.
+    # A Gaussian in anatomical units of sigma = sqrt(temperature / (2 * weight)): 0.39 at 0.1, 0.12 at 1 (T = 0.03).
+    anatomical_weight: float = Field(0.0, ge=0)
     cycle_weight: float = 1.0
     similarity_weight: float = 1.0
     huber_delta: Optional[float] = None  # null: squared cycle distance; otherwise Huber, in patch sizes (0.25)
@@ -79,6 +85,13 @@ class Config(ConfigBase):
     encoder: EncoderConfig
     module: ModuleConfig = Field(default_factory=ModuleConfig)
     train: TrainConfig
+
+    @model_validator(mode='after')
+    def check_anatomy_view(self):
+        if self.module.anatomical_weight and self.data.view != View.CC:
+            raise ValueError('anatomical_weight needs data.view = CC: src/utils/anatomy.py has no MLO nipple or centroid')
+
+        return self
 
 
 # Update JSON schema every time this module gets imported

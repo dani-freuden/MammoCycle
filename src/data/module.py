@@ -6,7 +6,7 @@ from lightning import LightningDataModule
 from torch import Tensor
 from torch.utils.data import DataLoader
 
-from src.enums import Column, Split
+from src.enums import Column, Split, View
 
 from .augmentations import FrameAugmentation
 from .dataset import CycleDataset
@@ -32,6 +32,7 @@ class CycleDataModule(LightningDataModule):
         augmentation: FrameAugmentation | None = None,
         num_workers: int = 8,
         max_records: int | None = None,
+        view: View | None = None,
     ):
         super().__init__()
         self.data_dir = Path(data_dir)
@@ -42,6 +43,7 @@ class CycleDataModule(LightningDataModule):
         self.augmentation = augmentation
         self.num_workers = num_workers
         self.max_records = max_records
+        self.view = view  # None keeps every view
 
         self._datasets: dict[Split, CycleDataset] = {}
 
@@ -49,7 +51,7 @@ class CycleDataModule(LightningDataModule):
         if stage not in STAGE_SPLITS:
             raise ValueError(f'Unsupported {stage = }, expected one of {list(STAGE_SPLITS)}')
 
-        records = load_records(self.data_dir, STAGE_SPLITS[stage])
+        records = load_records(self.data_dir, STAGE_SPLITS[stage], self.view)
         if self.max_records is not None:
             for split in records:
                 # A seeded random sample, the same in every run, so a subset does not follow the order of metadata.csv.

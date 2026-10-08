@@ -44,3 +44,6 @@ def calibrated_encoder(height=320, width=192):
     encoder = ResNetEncoder(pretrained_like().state_dict())
     encoder.calibrate([textured_frames(4, height, width, seed=100)])  # without it the affinity is flat
     return encoder
+
+
+

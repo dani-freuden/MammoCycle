@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 
 from src.models.tracker import (Tracker, cell_centers, cycle_loss, fit_rigid, patch_grid, patch_layout, place_layout,
-                                run_cycles, sample_features, similarity_loss)
+                                read_anatomy, run_cycles, sample_features, similarity_loss)
 from tests.helpers import STRIDE, random_features
 
 
@@ -144,6 +144,47 @@ def test_cycles_close_when_every_frame_is_shifted_differently():
     # first_hops[0] goes into the most recent prior, which was shifted by (2, -2) cells.
     assert torch.allclose(first_hops[0].grid, true_grid(2, 17, 7), atol=0.1)
     assert torch.allclose(first_hops[2].grid, true_grid(2, 19, 11), atol=0.1)
+
+
+def linear_anatomy(batch, height, width):
+    """A stand-in anatomical map: every cell's pixel position divided by 100."""
+    return cell_centers(height, width, STRIDE).T.reshape(1, 2, height, width).expand(batch, -1, -1, -1) / 100
+
+
+def test_reading_the_anatomy_between_cells():
+    anatomy = linear_anatomy(2, 32, 16)
+    points = torch.tensor([[40.0, 96.0], [3.0, 300.0]])  # a cell corner; off the frame's bottom-left corner
+
+    assert torch.allclose(read_anatomy(anatomy, points, STRIDE), torch.tensor([[0.4, 0.96], [0.04, 2.52]]))
+    assert read_anatomy(None, points, STRIDE) is None
+
+
+def test_zero_anatomical_weight_changes_nothing():
+    frame = random_features()
+    query = F.normalize(crop(frame, 10, 5) + 0.5 * crop(frame, 20, 9), dim=1)  # ambiguous, so not one-hot
+    plain = Tracker(stride=STRIDE, temperature=0.05)(query, frame)
+    zero = Tracker(stride=STRIDE, temperature=0.05)(query, frame, torch.zeros(2, 2), random_features(channels=2))
+
+    assert torch.equal(plain.grid, zero.grid) and torch.equal(plain.features, zero.features)
+
+
+def test_anatomical_prior_resolves_a_repeated_patch():
+    """The patch appears twice in both priors; the prior picks the copy at the patch's own anatomical position."""
+    frame = random_features(height=40, width=24)
+    prior = frame.clone()
+    prior[:, :, 30:36, 14:20] = crop(frame, 10, 5)
+    frames, start = [prior, prior, frame], true_grid(2, 10, 5)
+
+    without, _ = run_cycles(sharp_tracker(), crop(frame, 10, 5), frames)
+    assert (without['skip_1'] - start).norm(dim=-1).mean() > 16  # the hop lands between the copies
+
+    tracker = Tracker(stride=STRIDE, temperature=0.01, anatomical_weight=0.1)
+    query_anatomy = start.mean(dim=1) / 100
+    cycles, first_hops = run_cycles(tracker, crop(frame, 10, 5), frames, query_anatomy, [linear_anatomy(2, 40, 24)] * 3)
+
+    for end_grid in cycles.values():
+        assert torch.allclose(end_grid, start, atol=0.1)
+    assert torch.allclose(first_hops[1].anatomy, query_anatomy, atol=1e-4)
 
 
 def test_losses():

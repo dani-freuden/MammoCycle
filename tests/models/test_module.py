@@ -71,6 +71,28 @@ def test_different_patient_error_is_larger_than_same_patient_error():
     assert other.mean() > 2 * output.cycle_errors['skip_1'].mean()
 
 
+def test_step_and_window_with_the_anatomical_prior():
+    module = make_module(anatomical_weight=0.1)
+    output = module.cycle_step(records(2, 3), torch.Generator().manual_seed(0))
+
+    assert output.query_anatomy.shape == (6, 2)
+    assert len(output.frame_anatomy) == 3 and output.frame_anatomy[0].shape == (6, 2, 40, 24)
+    assert torch.isfinite(output.loss)
+    output.loss.backward()
+
+    with torch.no_grad():
+        assert module.different_patient_error(output).shape == (6,)
+        boxes = torch.tensor([[40.0, 100.0, 72.0, 132.0], [60.0, 150.0, 92.0, 182.0]])
+        frames = textured_frames(2)
+        result = module.locate_by_window(frames, frames, boxes)
+    assert (result['center'] - (boxes[:, :2] + boxes[:, 2:]) / 2).norm(dim=1).max() < 8
+
+
+def test_without_the_anatomical_prior_no_maps_are_built():
+    output = make_module().cycle_step(records(2, 2))
+    assert output.query_anatomy is None and output.frame_anatomy is None
+
+
 def test_background_landing_counts_points_outside_tissue():
     tissue = torch.zeros(2, 1, 64, 32)
     tissue[..., :16] = 1  # tissue is the left half

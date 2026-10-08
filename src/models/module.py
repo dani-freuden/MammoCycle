@@ -8,16 +8,19 @@ import math
 from dataclasses import dataclass
 
 import lightning as L
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import Tensor
 
 from src.data.augmentations import synthetic_prior
+from src.utils.anatomy import anatomical_map
 
 from .encoder import ResNetEncoder
 from .patch_sampler import sample_patches
 from .propagation import box_coverage, locate, propagate_labels
-from .tracker import Hop, Tracker, cycle_loss, patch_grid, place_layout, run_cycles, sample_features, similarity_loss
+from .tracker import (Hop, Tracker, cycle_loss, patch_grid, place_layout, read_anatomy, run_cycles, sample_features,
+                      similarity_loss)
 
 
 SYNTHETIC_BOX_SIZE = 64  # pixels; the boxes of the synthetic validation pairs, about the size of a lesion
@@ -44,6 +47,8 @@ class StepOutput:
     query: Tensor  # [B * P, C, hq, wq]
     start_grid: Tensor  # [B * P, hq * wq, 2]
     frame_features: list[Tensor]  # T maps [B * P, C, hf, wf], oldest first, each repeated per patch
+    query_anatomy: Tensor | None  # [B * P, 2] a_q at the query patch centres, None without the anatomical prior
+    frame_anatomy: list[Tensor] | None  # T maps [B * P, 2, hf, wf], like frame_features
 
 
 def background_landing(points: Tensor, tissue: Tensor) -> Tensor:
@@ -80,22 +85,36 @@ class MammoCycleModule(L.LightningModule):
 
     def __init__(self, encoder: ResNetEncoder, patch_size: int = 160, num_patches: int = 4,
                  min_tissue_fraction: float = 0.75, tissue_threshold: float = 0.01, temperature: float = 0.03,
-                 max_rotation_degrees: float = 20.0, cycle_weight: float = 1.0, similarity_weight: float = 1.0,
-                 huber_delta: float | None = None, top_k: int = 5, propagation_radius: float | None = None,
-                 label_threshold: float = 0.5, cycle_tolerance_px: float = 16.0, learning_rate: float = 1e-4,
-                 weight_decay: float = 1e-4, warmup_steps: int = 1000):
+                 max_rotation_degrees: float = 20.0, anatomical_weight: float = 0.0, cycle_weight: float = 1.0,
+                 similarity_weight: float = 1.0, huber_delta: float | None = None, top_k: int = 5,
+                 propagation_radius: float | None = None, label_threshold: float = 0.5,
+                 cycle_tolerance_px: float = 16.0, learning_rate: float = 1e-4, weight_decay: float = 1e-4,
+                 warmup_steps: int = 1000):
         super().__init__()
         if patch_size % encoder.stride:
             raise ValueError(f'{patch_size = } must be a multiple of {encoder.stride = }')
 
         self.save_hyperparameters(ignore=['encoder'])
         self.encoder = encoder
-        self.tracker = Tracker(encoder.stride, temperature, max_rotation_degrees)
+        self.tracker = Tracker(encoder.stride, temperature, max_rotation_degrees, anatomical_weight)
         self._epoch_errors: list[Tensor] = []
 
     def encode(self, images: Tensor) -> Tensor:
         """[N, 1, H, W] -> L2-normalized features [N, C, H / stride, W / stride] in float32."""
         return F.normalize(self.encoder(images).float(), dim=1)
+
+    def anatomical_maps(self, images: Tensor) -> Tensor | None:
+        """[N, 1, H, W] -> anatomical maps [N, 2, H / stride, W / stride], or None when the prior is off.
+
+        Fixed metadata, computed on the CPU from the images the encoder sees, so after any augmentation. CC only.
+        """
+        if not self.hparams.anatomical_weight:
+            return None
+
+        maps = [anatomical_map(image[0].float().cpu().numpy(), self.encoder.stride, self.hparams.tissue_threshold)
+                for image in images]
+
+        return torch.from_numpy(np.stack(maps)).to(images.device)
 
     def _sample_positions(self, frames: Tensor, count: int, size: int, generator: torch.Generator | None) -> Tensor:
         hp = self.hparams
@@ -113,12 +132,16 @@ class MammoCycleModule(L.LightningModule):
         features = self.encode(frames.flatten(0, 1)).unflatten(0, frames.shape[:2])  # [B, T, C, hf, wf]
         # The tracker works on B * P patches: sample b's patches are rows b * P ... b * P + P - 1.
         frame_features = [feature.repeat_interleave(hp.num_patches, dim=0) for feature in features.unbind(dim=1)]
+        anatomy = self.anatomical_maps(frames.flatten(0, 1))
+        frame_anatomy = None if anatomy is None else [
+            maps.repeat_interleave(hp.num_patches, dim=0) for maps in anatomy.unflatten(0, frames.shape[:2]).unbind(1)]
 
         with full_precision(frames):
             # Patches lie on the stride grid, so reading the query from the frame's own features is exact.
             start_grid = patch_grid(top_left.flatten(0, 1), cells, cells, stride)
             query = sample_features(frame_features[-1], start_grid, stride, (cells, cells))
-            cycles, first_hops = run_cycles(self.tracker, query, frame_features)
+            query_anatomy = None if anatomy is None else read_anatomy(frame_anatomy[-1], start_grid.mean(dim=1), stride)
+            cycles, first_hops = run_cycles(self.tracker, query, frame_features, query_anatomy, frame_anatomy)
 
             cycle_losses = {name: cycle_loss(start_grid, end_grid, hp.patch_size, hp.huber_delta)
                             for name, end_grid in cycles.items()}
@@ -133,7 +156,7 @@ class MammoCycleModule(L.LightningModule):
             loss = hp.cycle_weight * mean_cycle + hp.similarity_weight * mean_similarity
 
         return StepOutput(loss, mean_cycle, mean_similarity, cycle_losses, cycle_errors, similarity_losses,
-                          first_hops[0], query, start_grid, frame_features)
+                          first_hops[0], query, start_grid, frame_features, query_anatomy, frame_anatomy)
 
     def on_fit_start(self):
         if not self.encoder.calibrated:
@@ -202,10 +225,17 @@ class MammoCycleModule(L.LightningModule):
 
         A model that matches tissue closes same-patient cycles far better than these. If the two errors are close, it
         matches by outline and position. Needs a batch of at least two.
+
+        With the anatomical prior the other prior's map comes along, so this measures the tracker as trained. The
+        prior pulls the match to the same anatomical place on any breast, so expect the ratio to fall as its weight
+        grows even if the features do not change.
         """
-        other_prior = output.frame_features[-2].roll(self.hparams.num_patches, dims=0)
-        there = self.tracker(output.query, other_prior)
-        back = self.tracker(there.features, output.frame_features[-1])
+        shift = self.hparams.num_patches
+        other_prior = output.frame_features[-2].roll(shift, dims=0)
+        other_anatomy, query_frame_anatomy = (None, None) if output.frame_anatomy is None else (
+            output.frame_anatomy[-2].roll(shift, dims=0), output.frame_anatomy[-1])
+        there = self.tracker(output.query, other_prior, output.query_anatomy, other_anatomy)
+        back = self.tracker(there.features, output.frame_features[-1], there.anatomy, query_frame_anatomy)
 
         return (back.grid - output.start_grid).norm(dim=-1).mean(dim=1)
 
@@ -276,7 +306,7 @@ class MammoCycleModule(L.LightningModule):
         results = []
 
         with full_precision(source):
-            for box, source_map, target_map in zip(boxes.float(), source_features, target_features):
+            for i, box in enumerate(boxes.float()):
                 # One box at a time, because windows differ in size.
                 longest = (box[2:] - box[:2]).max().item()
                 cells = min(max(self.hparams.patch_size // stride, math.ceil(context * longest / stride)),
@@ -285,10 +315,15 @@ class MammoCycleModule(L.LightningModule):
                 top_left = ((box[:2] + box[2:] - size) / 2 / stride).round() * stride  # on the stride grid
                 top_left = top_left.clamp(box.new_zeros(2), box.new_tensor([width - size, height - size]))
 
+                source_map, target_map = source_features[i, None], target_features[i, None]
+                source_anatomy = self.anatomical_maps(source[i, None])  # None without the anatomical prior
+                target_anatomy = self.anatomical_maps(target[i, None])
+
                 start_grid = patch_grid(top_left[None], cells, cells, stride)
-                query = sample_features(source_map[None], start_grid, stride, (cells, cells))
-                hop = self.tracker(query, target_map[None])
-                back = self.tracker(hop.features, source_map[None])
+                query = sample_features(source_map, start_grid, stride, (cells, cells))
+                query_anatomy = read_anatomy(source_anatomy, start_grid.mean(dim=1), stride)
+                hop = self.tracker(query, target_map, query_anatomy, target_anatomy)
+                back = self.tracker(hop.features, source_map, hop.anatomy, source_anatomy)
 
                 # Rotate the box's corners about the window centre and move them to the matched centre.
                 corners = torch.stack([box[[0, 1]], box[[2, 1]], box[[2, 3]], box[[0, 3]]])
