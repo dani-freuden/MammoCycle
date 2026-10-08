@@ -11,10 +11,14 @@ class LengthBatchSampler(Sampler[list[int]]):
 
     Each batch holds a single length, so the default collate can stack it, while the order of the batches
     mixes lengths, so training does not see all the short records first and all the long ones last.
+
+    Under multi-GPU training every process shuffles alike, from the same seed, and takes every world_size-th batch.
     """
 
-    def __init__(self, lengths: Sequence[int], batch_size: int, seed: int = 0):
+    def __init__(self, lengths: Sequence[int], batch_size: int, seed: int = 0, rank: int = 0, world_size: int = 1):
         self.batch_size = batch_size
+        self.rank = rank
+        self.world_size = world_size
         self.groups: dict[int, list[int]] = defaultdict(list)
 
         for index, length in enumerate(lengths):
@@ -32,7 +36,9 @@ class LengthBatchSampler(Sampler[list[int]]):
             batches += [indices[i: i + self.batch_size] for i in range(0, len(indices), self.batch_size)]
 
         self._rng.shuffle(batches)
-        return iter(batches)
+        # Every process gets the same number of batches, or DDP waits forever for the ones that ran out.
+        batches = batches[:len(batches) // self.world_size * self.world_size]
+        return iter(batches[self.rank::self.world_size])
 
     def __len__(self) -> int:
-        return sum(math.ceil(len(indices) / self.batch_size) for indices in self.groups.values())
+        return sum(math.ceil(len(indices) / self.batch_size) for indices in self.groups.values()) // self.world_size

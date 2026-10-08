@@ -9,3 +9,7 @@ requires-python = ">=3.10"
 
 [tool.setuptools.packages.find]
 include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]  # so tests can share tests/helpers.py

@@ -61,3 +61,12 @@ def test_default_collate_stacks_every_batch():
     loader = DataLoader(dataset, batch_sampler=LengthBatchSampler(LENGTHS, batch_size=2))
 
     assert sorted(batch.shape[1] for batch in loader) == [2, 2, 2, 3, 3, 4]
+
+
+def test_processes_split_one_order_into_equal_shares():
+    order = list(LengthBatchSampler(LENGTHS, batch_size=2))
+    shares = [LengthBatchSampler(LENGTHS, batch_size=2, rank=rank, world_size=4) for rank in range(4)]
+
+    # 6 batches over 4 processes: one each, and the last 2 are left out, so no process waits for the others.
+    assert [list(share) for share in shares] == [[batch] for batch in order[:4]]
+    assert [len(share) for share in shares] == [1] * 4

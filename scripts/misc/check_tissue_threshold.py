@@ -1,7 +1,7 @@
 """Check how reliable `pixel > threshold` is as a tissue mask on the frames the model sees.
 
-Images are taken from the records and loaded through CycleDataset, so they are resized to image_size as in
-training, and patch positions are evaluated on the encoder's feature grid. For every sampled image the simple
+Images are taken from the records and loaded through CycleDataset, so they are cropped and fitted to the canvas
+as in training, and patch positions are evaluated on the encoder's feature grid. For every sampled image the simple
 threshold mask (the candidate) is compared against a reference mask (triangle threshold, then the largest
 contour, filled). Three things are measured:
 
@@ -130,12 +130,13 @@ def main(
     split: Annotated[Literal['all', 'train', 'dev', 'test'], Option(prompt=True, help='Split to sample from')] = 'train',
     view: Annotated[Literal['all', 'CC', 'MLO'], Option(prompt=True, help='View to sample from')] = 'all',
     num_images: Annotated[int, Option(prompt=True, help='Number of images to sample')] = 10_000,
-    image_size: Annotated[int, Option(prompt=True, help='Frame size, as given to CycleDataModule')] = 240,
-    patch_size: Annotated[int, Option(prompt=True, help='Patch size in frame pixels')] = 80,
+    height: Annotated[int, Option(prompt=True, help='Frame height, as in the config')] = 1024,
+    width: Annotated[int, Option(prompt=True, help='Frame width, as in the config')] = 640,
+    patch_size: Annotated[int, Option(prompt=True, help='Patch size in frame pixels')] = 160,
     threshold: Annotated[float, Option(prompt=True, help='Candidate tissue threshold, in [0, 1]')] = 0.01,
     min_fraction: Annotated[float, Option(prompt=True, help='Tissue fraction the sampler requires')] = 0.75,
     tolerance: Annotated[float, Option(prompt=True, help='Slack before a position counts as bad')] = 0.15,
-    edge_band: Annotated[int, Option(prompt=True, help='Frame pixels around the breast edge to ignore')] = 2,
+    edge_band: Annotated[int, Option(prompt=True, help='Frame pixels around the breast edge to ignore')] = 8,
     bad_positions_limit: Annotated[float, Option(prompt=True, help='Share of bad positions that fails an image')] = 0.01,
     save_worst: Annotated[int, Option(prompt=True, help='Number of overlay images to save')] = 30,
     out_dir: Annotated[Path, Option(prompt=True, help='Where to write results.csv and the overlays')] = Path('threshold_check'),
@@ -145,12 +146,12 @@ def main(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     images = sample_images(data_dir, split, view, num_images, seed)
-    dataset = CycleDataset(images, image_size=image_size)
+    dataset = CycleDataset(images, height, width)
     loader = DataLoader(dataset, batch_size=32, num_workers=num_workers)
 
     rows = []
     for batch in loader:
-        for frames in batch['frames'].numpy():  # [1, 1, image_size, image_size] per one-exam record
+        for frames in batch['frames'].numpy():  # [1, 1, height, width] per one-exam record
             rows.append(analyse(frames[0, 0], threshold, patch_size, min_fraction, tolerance, edge_band))
 
     results = pd.DataFrame(rows)
