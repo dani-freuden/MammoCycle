@@ -77,6 +77,8 @@ class TrainConfig(ConfigBase):
     gradient_clip_val: float = 1.0
     val_check_interval: Optional[int] = None  # training steps between validations; null validates once per epoch
     limit_val_batches: Optional[int] = None  # null validates on every dev pair
+    # Dev and test pairs: false takes every (earlier, later) pair of a record, as MammoTracker; true consecutive only.
+    consecutive_pairs: bool = False
 
 
 class Config(ConfigBase):

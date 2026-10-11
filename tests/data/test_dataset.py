@@ -42,6 +42,22 @@ def test_a_wide_breast_shrinks_to_the_canvas_width(tmp_path):
     assert tissue[:128].all() and not tissue[128:].any()  # 128 x 64, padding at the bottom
 
 
+def test_clear_background_crops_to_the_breast_when_the_background_is_not_zero(tmp_path):
+    image = np.full((2048, 1664), 30, dtype=np.uint8)
+    image[500:1500, 1164:] = 150
+    image[500:600, 1164:1264] = 30  # a notch of background inside the breast's bounding box
+    image[100:120, 100:160] = 255
+    Image.fromarray(image).save(tmp_path / 'image.png')
+
+    plain = load_frame(tmp_path / 'image.png', height=256, width=160)
+    frame = load_frame(tmp_path / 'image.png', height=256, width=160, clear_background=True)
+
+    assert plain[0, 0, 0] > 0  # otherwise the whole image is the region, background included
+    # As in the first test: 256 x 128 on the right. The notch is about 26 x 26 at the breast's top left corner.
+    assert (frame[0, 40:, 32:] > 0).all() and not (frame[0, :, :32] > 0).any()
+    assert frame[0, 10, 40] == 0 and torch.allclose(frame[0, 128, 100], torch.tensor(150 / 255))
+
+
 def test_records_are_capped_at_max_exams_in_date_order(tmp_path):
     exams = tuple(Exam(f'e{i}', date(1910 + i, 1, 1), write_image(tmp_path / f'{i}.png', level=10 * (i + 1)))
                   for i in range(5))

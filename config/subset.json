@@ -1,0 +1,22 @@
+{
+  "data": {
+    "height": 512,
+    "width": 320
+  },
+  "encoder": {
+    "checkpoint": "/data/rbg/users/dani_fr/projects/mirai-shira/runs/shifa-8bit-2-steps4000/best.ckpt",
+    "calibrated": "runs/calibration/mirai_512x320.pt"
+  },
+  "module": {
+    "patch_size": 96,
+    "similarity_weight": 0.1,
+    "warmup_steps": 500,
+    "anatomical_weight": 0.00001
+  },
+  "train": {
+    "max_epochs": 60,
+    "max_exams": 2,
+    "val_check_interval": 1000,
+    "limit_val_batches": 50
+  }
+}

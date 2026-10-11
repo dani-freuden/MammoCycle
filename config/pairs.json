@@ -1,0 +1,12 @@
+{
+  "encoder": {
+    "checkpoint": "/data/rbg/users/dani_fr/projects/mirai-shira/runs/shifa-8bit-2-steps4000/best.ckpt",
+    "calibrated": "runs/calibration/mirai_1024x640.pt"
+  },
+  "train": {
+    "max_epochs": 10,
+    "max_exams": 2,
+    "val_check_interval": 2000,
+    "limit_val_batches": 250
+  }
+}

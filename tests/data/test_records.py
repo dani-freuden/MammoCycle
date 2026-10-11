@@ -74,8 +74,15 @@ def _record(patient_id, num_exams):
     return Record(patient_id, Side.LEFT, View.CC, exams)
 
 
-def test_to_pairs_splits_into_consecutive_pairs():
+def test_to_pairs_takes_every_pair_earlier_exam_first():
     pairs = to_pairs([_record('p1', 4)])
+
+    assert [[exam.exam_id for exam in pair.exams] for pair in pairs] == [
+        ['e0', 'e1'], ['e0', 'e2'], ['e0', 'e3'], ['e1', 'e2'], ['e1', 'e3'], ['e2', 'e3']]
+
+
+def test_to_pairs_consecutive_takes_consecutive_pairs_only():
+    pairs = to_pairs([_record('p1', 4)], consecutive=True)
 
     assert [[exam.exam_id for exam in pair.exams] for pair in pairs] == [['e0', 'e1'], ['e1', 'e2'], ['e2', 'e3']]
 
@@ -86,13 +93,14 @@ def test_to_pairs_keeps_patient_side_view():
     assert {(pair.patient_id, pair.side, pair.view) for pair in pairs} == {('p1', Side.LEFT, View.CC)}
 
 
-def test_to_pairs_keeps_a_two_exam_record_whole():
+@pytest.mark.parametrize('consecutive', [False, True])
+def test_to_pairs_keeps_a_two_exam_record_whole(consecutive):
     record = _record('p1', 2)
 
-    assert to_pairs([record]) == [record]
+    assert to_pairs([record], consecutive) == [record]
 
 
 def test_to_pairs_keeps_record_order():
     pairs = to_pairs([_record('p1', 2), _record('p2', 3)])
 
-    assert [pair.patient_id for pair in pairs] == ['p1', 'p2', 'p2']
+    assert [pair.patient_id for pair in pairs] == ['p1', 'p2', 'p2', 'p2']

@@ -33,6 +33,7 @@ class CycleDataModule(LightningDataModule):
         num_workers: int = 8,
         max_records: int | None = None,
         view: View | None = None,
+        consecutive_pairs: bool = False,
     ):
         super().__init__()
         self.data_dir = Path(data_dir)
@@ -44,6 +45,7 @@ class CycleDataModule(LightningDataModule):
         self.num_workers = num_workers
         self.max_records = max_records
         self.view = view  # None keeps every view
+        self.consecutive_pairs = consecutive_pairs  # dev and test on consecutive exam pairs only, not every pair
 
         self._datasets: dict[Split, CycleDataset] = {}
 
@@ -68,7 +70,7 @@ class CycleDataModule(LightningDataModule):
             # Training cycles through whole records, but the model registers two exams, so evaluate on pairs.
             # Shuffled once, so the next sample in a batch, whose prior the different-patient error borrows, is
             # rarely another pair of the same record.
-            pairs = to_pairs(split_records)
+            pairs = to_pairs(split_records, self.consecutive_pairs)
             random.Random(0).shuffle(pairs)
             self._datasets[split] = CycleDataset(pairs, self.height, self.width)
 

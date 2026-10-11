@@ -1,6 +1,7 @@
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from datetime import date
+from itertools import combinations, pairwise
 from pathlib import Path
 from typing import Iterable
 
@@ -62,10 +63,11 @@ def load_records(data_dir: Path, splits: Iterable[Split], view: View = None) -> 
     return records
 
 
-def to_pairs(records: list[Record]) -> list[Record]:
-    """Split each record into its consecutive exam pairs: n exams give n - 1 records of two."""
+def to_pairs(records: list[Record], consecutive: bool = False) -> list[Record]:
+    """Split each record into exam pairs, earlier exam first: every pair, n exams giving n (n - 1) / 2 records of two
+    as in MammoTracker's exhaustive lesion pairs, or with consecutive only the n - 1 consecutive ones."""
     return [
-        replace(record, exams=record.exams[i: i + 2])
+        replace(record, exams=pair)
         for record in records
-        for i in range(len(record.exams) - 1)
+        for pair in (pairwise(record.exams) if consecutive else combinations(record.exams, 2))
     ]

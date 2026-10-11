@@ -35,7 +35,7 @@ def main(
                               **cfg.module.model_dump())
     augmentation = None if cfg.augmentation is None else FrameAugmentation(**cfg.augmentation.model_dump())
     data = CycleDataModule(data_dir, cfg.data.height, cfg.data.width, cfg.train.batch_size, cfg.train.max_exams,
-                           augmentation, num_workers, max_records, cfg.data.view)
+                           augmentation, num_workers, max_records, cfg.data.view, cfg.train.consecutive_pairs)
     
     trainer = L.Trainer(
         default_root_dir=f'runs/{config}',

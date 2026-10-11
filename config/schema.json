@@ -1,0 +1,341 @@
+{
+  "$defs": {
+    "AugmentationConfig": {
+      "description": "FrameAugmentation(**model_dump())",
+      "properties": {
+        "max_shift": {
+          "default": 48.0,
+          "title": "Max Shift",
+          "type": "number"
+        },
+        "max_rotation_degrees": {
+          "default": 5.0,
+          "title": "Max Rotation Degrees",
+          "type": "number"
+        },
+        "scale_range": {
+          "default": [
+            1.0,
+            1.0
+          ],
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Scale Range",
+          "type": "array"
+        },
+        "reverse_probability": {
+          "default": 0.5,
+          "title": "Reverse Probability",
+          "type": "number"
+        },
+        "intensity": {
+          "default": true,
+          "title": "Intensity",
+          "type": "boolean"
+        }
+      },
+      "title": "AugmentationConfig",
+      "type": "object"
+    },
+    "DataConfig": {
+      "properties": {
+        "height": {
+          "default": 1024,
+          "title": "Height",
+          "type": "integer"
+        },
+        "width": {
+          "default": 640,
+          "title": "Width",
+          "type": "integer"
+        },
+        "tissue_threshold": {
+          "default": 0.01,
+          "title": "Tissue Threshold",
+          "type": "number"
+        },
+        "view": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/View"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "CC"
+        }
+      },
+      "title": "DataConfig",
+      "type": "object"
+    },
+    "EncoderConfig": {
+      "description": "build_encoder(config)",
+      "properties": {
+        "checkpoint": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Checkpoint"
+        },
+        "calibrated": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Calibrated"
+        },
+        "mean": {
+          "default": 0.11866,
+          "title": "Mean",
+          "type": "number"
+        },
+        "std": {
+          "default": 0.1885,
+          "title": "Std",
+          "type": "number"
+        },
+        "freeze_batch_norm": {
+          "default": true,
+          "title": "Freeze Batch Norm",
+          "type": "boolean"
+        },
+        "dilate": {
+          "default": true,
+          "title": "Dilate",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "checkpoint"
+      ],
+      "title": "EncoderConfig",
+      "type": "object"
+    },
+    "ModuleConfig": {
+      "description": "MammoCycleModule(encoder, tissue_threshold=data.tissue_threshold, **model_dump())",
+      "properties": {
+        "patch_size": {
+          "default": 160,
+          "title": "Patch Size",
+          "type": "integer"
+        },
+        "num_patches": {
+          "default": 4,
+          "title": "Num Patches",
+          "type": "integer"
+        },
+        "min_tissue_fraction": {
+          "default": 0.75,
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "title": "Min Tissue Fraction",
+          "type": "number"
+        },
+        "temperature": {
+          "default": 0.03,
+          "title": "Temperature",
+          "type": "number"
+        },
+        "max_rotation_degrees": {
+          "default": 20.0,
+          "title": "Max Rotation Degrees",
+          "type": "number"
+        },
+        "anatomical_weight": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Anatomical Weight",
+          "type": "number"
+        },
+        "cycle_weight": {
+          "default": 1.0,
+          "title": "Cycle Weight",
+          "type": "number"
+        },
+        "similarity_weight": {
+          "default": 1.0,
+          "title": "Similarity Weight",
+          "type": "number"
+        },
+        "huber_delta": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Huber Delta"
+        },
+        "top_k": {
+          "default": 5,
+          "title": "Top K",
+          "type": "integer"
+        },
+        "propagation_radius": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Propagation Radius"
+        },
+        "label_threshold": {
+          "default": 0.5,
+          "title": "Label Threshold",
+          "type": "number"
+        },
+        "cycle_tolerance_px": {
+          "default": 16.0,
+          "title": "Cycle Tolerance Px",
+          "type": "number"
+        },
+        "learning_rate": {
+          "default": 0.0001,
+          "title": "Learning Rate",
+          "type": "number"
+        },
+        "weight_decay": {
+          "default": 0.0001,
+          "title": "Weight Decay",
+          "type": "number"
+        },
+        "warmup_steps": {
+          "default": 1000,
+          "title": "Warmup Steps",
+          "type": "integer"
+        }
+      },
+      "title": "ModuleConfig",
+      "type": "object"
+    },
+    "TrainConfig": {
+      "properties": {
+        "max_epochs": {
+          "title": "Max Epochs",
+          "type": "integer"
+        },
+        "batch_size": {
+          "default": 8,
+          "title": "Batch Size",
+          "type": "integer"
+        },
+        "max_exams": {
+          "default": 4,
+          "minimum": 2,
+          "title": "Max Exams",
+          "type": "integer"
+        },
+        "precision": {
+          "default": "16-mixed",
+          "title": "Precision",
+          "type": "string"
+        },
+        "gradient_clip_val": {
+          "default": 1.0,
+          "title": "Gradient Clip Val",
+          "type": "number"
+        },
+        "val_check_interval": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Val Check Interval"
+        },
+        "limit_val_batches": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit Val Batches"
+        },
+        "consecutive_pairs": {
+          "default": false,
+          "title": "Consecutive Pairs",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "max_epochs"
+      ],
+      "title": "TrainConfig",
+      "type": "object"
+    },
+    "View": {
+      "enum": [
+        "CC",
+        "MLO"
+      ],
+      "title": "View",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "data": {
+      "$ref": "#/$defs/DataConfig"
+    },
+    "augmentation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AugmentationConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "encoder": {
+      "$ref": "#/$defs/EncoderConfig"
+    },
+    "module": {
+      "$ref": "#/$defs/ModuleConfig"
+    },
+    "train": {
+      "$ref": "#/$defs/TrainConfig"
+    }
+  },
+  "required": [
+    "encoder",
+    "train"
+  ],
+  "title": "Config",
+  "type": "object"
+}
