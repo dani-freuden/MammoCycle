@@ -24,7 +24,8 @@ from ..data.prepare import WINDOW
 
 class CorrectionRegressionModel(L.LightningModule):
     def __init__(self, checkpoint: Path | None = None, mean: float = 0.11866, std: float = 0.18850,
-                 huber_delta: float = 0.05, learning_rate: float = 1e-4, weight_decay: float = 1e-4):
+                 huber_delta: float = 0.05, learning_rate: float = 1e-4, weight_decay: float = 1e-4,
+                 dropout: float = 0.3):
         super().__init__()
         self.save_hyperparameters()
 
@@ -50,8 +51,9 @@ class CorrectionRegressionModel(L.LightningModule):
         """The predicted (dx, dy), (B, 2), as a fraction of the window."""
         current_feat = self.backbone(self._normalize(current)).mean(dim=(2, 3))  # (B, 512)
         prior_feat = self.prior_reduce(self.backbone(self._normalize(prior))).flatten(1)  # (B, 64 * 7 * 7)
+        features = torch.cat([current_feat, prior_feat], dim=1)
 
-        return self.head(torch.cat([current_feat, prior_feat], dim=1))
+        return self.head(F.dropout(features, self.hparams.dropout, self.training))
 
     def training_step(self, batch, batch_idx):
         loss = self._loss(self(batch['current'], batch['prior']), batch['target'])

@@ -9,7 +9,9 @@ fraction of WINDOW, so the corrected centre is the anatomical centre - WINDOW * 
 whose true centre lies outside the prior window (|dx| or |dy| > 0.5).
 
 Writes pairs.csv to output_dir: predictions.csv with current_x, current_y, anat_x, anat_y, dx and dy.
-CorrectionDataset reads one split of it and crops the full PNGs at load time.
+CorrectionDataset reads one split of it and crops the full PNGs at load time. With jitter, for training, the prior crop's
+centre moves by a random (ex, ey) of up to jitter PNG pixels each, and the target with it, (dx + ex / WINDOW,
+dy + ey / WINDOW), so a pair gives a different crop and offset every time.
 
 Usage:
     python -m baselines.correction_regression.data.prepare
@@ -37,19 +39,23 @@ IDS = {'patient_id': str, 'prior_exam_id': str, 'current_exam_id': str}
 class CorrectionDataset(Dataset):
     """One split of pairs.csv, as the model's batches want it: 'current' and 'prior' crops and 'target' (dx, dy)."""
 
-    def __init__(self, pairs_csv: Path, split: Split):
+    def __init__(self, pairs_csv: Path, split: Split, jitter: int = 0):
         pairs = pd.read_csv(pairs_csv, dtype=IDS)
         self.pairs = pairs[pairs.split_group == str(split)].reset_index(drop=True)
+        self.jitter = jitter
 
     def __len__(self):
         return len(self.pairs)
 
     def __getitem__(self, index: int) -> dict[str, Tensor]:
         pair = self.pairs.iloc[index]
+        # torch's generator, which the DataLoader seeds differently in each worker; a numpy one made in __init__ would
+        # be copied into every worker with the same state.
+        ex, ey = torch.randint(-self.jitter, self.jitter + 1, (2,)).tolist()
 
         return {'current': crop(pair.current_path, pair.current_x, pair.current_y),
-                'prior': crop(pair.prior_path, pair.anat_x, pair.anat_y),
-                'target': torch.tensor([pair.dx, pair.dy], dtype=torch.float32)}
+                'prior': crop(pair.prior_path, pair.anat_x + ex, pair.anat_y + ey),
+                'target': torch.tensor([pair.dx + ex / WINDOW, pair.dy + ey / WINDOW], dtype=torch.float32)}
 
 
 def crop(path: str, x: int, y: int) -> Tensor:

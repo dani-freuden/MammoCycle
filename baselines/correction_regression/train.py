@@ -34,12 +34,15 @@ def main(
     learning_rate: Annotated[float, Option(help='AdamW learning rate')] = 1e-4,
     weight_decay: Annotated[float, Option(help='AdamW weight decay')] = 1e-4,
     huber_delta: Annotated[float, Option(help='Huber delta, in windows (0.05 is ~22 PNG pixels)')] = 0.05,
+    jitter: Annotated[int, Option(help='Train only: PNG pixels the prior crop centre moves, at most, in x and y')] = 64,
+    dropout: Annotated[float, Option(help='Dropout on the features going into the head')] = 0.3,
     num_workers: Annotated[int, Option(help='DataLoader workers')] = 16,
     gpu: Annotated[int, Option(help='GPU index to train on')] = 0,
 ):
     module = CorrectionRegressionModel(checkpoint, huber_delta=huber_delta, learning_rate=learning_rate,
-                                       weight_decay=weight_decay)
-    train = DataLoader(CorrectionDataset(pairs_csv, Split.TRAIN), batch_size, shuffle=True, num_workers=num_workers)
+                                       weight_decay=weight_decay, dropout=dropout)
+    train = DataLoader(CorrectionDataset(pairs_csv, Split.TRAIN, jitter), batch_size, shuffle=True,
+                       num_workers=num_workers)
     dev = DataLoader(CorrectionDataset(pairs_csv, Split.DEV), batch_size, num_workers=num_workers)
 
     trainer = L.Trainer(
