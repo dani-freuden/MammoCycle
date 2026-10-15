@@ -4,6 +4,11 @@ Selection: CC views, full-field 2D or C-View (no spot compression, magnification
 from EMBED's ROI_coords or from the mammotracker CSVs. Each exam and breast keeps one image (2D before C-View, then
 the highest InstanceNumber), and only breasts with at least two such exams are kept, since a record needs two.
 
+With --all-images, every exam, breast and view keeps one full-field 2D CC or MLO image instead (the highest
+InstanceNumber), annotated or not, for training on single images. Patients of the annotated set keep their split
+there (--splits-from), so its dev and test pairs stay out of training; the other patients are split 80/10/10. No
+boxes.csv is written.
+
 Each image is converted as mirai-shira converts Shifa: dcmj2pnm +on2 --min-max-window, to a 16-bit PNG. It is then
 1. flipped so the chest wall is on the right. PatientOrientation says where the rows run: towards A (anterior) puts the
    chest wall on the left, towards P on the right. Without a usable tag, the side of the breast's centroid decides.
@@ -15,14 +20,15 @@ Writes to out_dir:
     metadata.csv  one row per image: the columns records.py reads, split_group (80/10/10 by patient), the geometry,
                   and pixel_spacing in mm on the stored image (DICOM PixelSpacing; missing on GE images)
     boxes.csv     one row per box: the four numbers as its source gives them (given_0 to given_3), and the box
-                  mapped into the PNG as (ymin, xmin, ymax, xmax), see ORDER
+                  mapped into the PNG as (ymin, xmin, ymax, xmax), see ORDER (not with --all-images)
     failed.csv    images that could not be converted
 
 PNGs that already exist are not converted again. dcmj2pnm must be on PATH (conda install -c conda-forge dcmtk).
 
 Usage:
-    python scripts/misc/prepare_embed_dataset.py   # prompts for every option
+    python scripts/misc/prepare_embed_dataset.py   # prompts for every option but --splits-from
     python scripts/misc/prepare_embed_dataset.py --workers 32
+    python scripts/misc/prepare_embed_dataset.py --all-images --out-dir /data/rbg/users/dani_fr/embed_all_8bit
 """
 import ast
 import os
@@ -77,11 +83,12 @@ METADATA_COLUMNS = {
 }
 
 
-def load_images(embed_root: Path) -> pd.DataFrame:
-    """The CC images that can be prepared: full-field 2D or C-View, without spot, magnification or view modifier."""
+def load_images(embed_root: Path, views: list[str], image_types: list[str]) -> pd.DataFrame:
+    """The images of these views and types that can be prepared: full-field, without spot, magnification or view
+    modifier."""
     df = pd.read_csv(embed_root / 'tables' / 'EMBED_OpenData_metadata.csv', usecols=list(METADATA_COLUMNS),
                      dtype=str).rename(columns=METADATA_COLUMNS)
-    df = df[df[str(Column.VIEW)].eq('CC') & df.image_type.isin(['2D', 'cview'])
+    df = df[df[str(Column.VIEW)].isin(views) & df.image_type.isin(image_types)
             & df.spot_mag.isna() & df.view_modifier.isna()].copy()
 
     df['dicom_path'] = df.dicom_path.str.replace(NAS_PREFIX, f'{embed_root}/images/', regex=False)
@@ -227,16 +234,34 @@ def main(
         = Path('/data/rbg/users/dani_fr/projects/mammo_track/debug/5cases/mammotracker_csvs'),
     out_dir: Annotated[Path, Option(prompt=True, help='Where the PNGs and CSVs go')]
         = Path('/data/rbg/users/dani_fr/embed_prepared_8bit'),
+    all_images: Annotated[bool, Option(prompt=True, help='One 2D image per exam, breast and view (CC and MLO), '
+                                                         'annotated or not')]
+        = False,
+    splits_from: Annotated[Path, Option(help='With --all-images: the annotated metadata.csv, whose patients keep '
+                                             'their split')]
+        = Path('/data/rbg/users/dani_fr/embed_prepared_8bit/metadata.csv'),
     workers: Annotated[int, Option(prompt=True, help='Parallel conversions')] = 32,
     seed: Annotated[int, Option(prompt=True, help='Seed for the patient split')] = 0,
 ):
     if shutil.which('dcmj2pnm') is None:
         raise SystemExit('dcmj2pnm is not on PATH; install DCMTK first: conda install -c conda-forge dcmtk')
+    if all_images and out_dir.resolve() == splits_from.resolve().parent:
+        raise SystemExit(f'--all-images would overwrite the annotated set in {out_dir}; give another --out-dir')
 
-    images = load_images(embed_root)
-    boxes = load_boxes(images, mammotracker_dir)
-    images = select(images, boxes)
-    images[str(Column.SPLIT_GROUP)] = assign_splits(images[str(Column.PATIENT_ID)], seed)
+    if all_images:
+        images = (load_images(embed_root, ['CC', 'MLO'], ['2D']).sort_values('instance_number')
+                  .drop_duplicates([str(Column.EXAM_ID), str(Column.LATERALITY), str(Column.VIEW)], keep='last'))
+        print(f'2D CC and MLO images, one per exam, breast and view: {len(images)} '
+              f'({images[str(Column.VIEW)].value_counts().to_dict()}), '
+              f'{images[str(Column.PATIENT_ID)].nunique()} patients')
+        annotated = pd.read_csv(splits_from, dtype=str).groupby(str(Column.PATIENT_ID))[str(Column.SPLIT_GROUP)].first()
+        patients = images[str(Column.PATIENT_ID)]
+        images[str(Column.SPLIT_GROUP)] = patients.map(annotated).fillna(assign_splits(patients, seed))
+    else:
+        images = load_images(embed_root, ['CC'], ['2D', 'cview'])
+        boxes = load_boxes(images, mammotracker_dir)
+        images = select(images, boxes)
+        images[str(Column.SPLIT_GROUP)] = assign_splits(images[str(Column.PATIENT_ID)], seed)
     images[str(Column.FILE_PATH)] = 'png/' + images[str(Column.PATIENT_ID)] + '/' + images.sop_uid + '.png'
     print(f'Without a usable PatientOrientation, so the breast centroid decides: '
           f'{images.flip_by_tag.isna().sum()} of {len(images)}')
@@ -254,23 +279,24 @@ def main(
     images[['resized_height', 'resized_width']] = [fitted_size(r, c) for r, c in zip(images.rows, images.cols)]
     images['pad_left'] = WIDTH - images.resized_width
 
-    geometry = images.set_index('sop_uid')[GEOMETRY]
-    boxes = boxes[boxes.sop_uid.isin(geometry.index)].reset_index(drop=True)
-    mapped = [map_box(standard_box(source, given), *geometry.loc[sop_uid])
-              for source, sop_uid, given in zip(boxes.source, boxes.sop_uid, boxes[GIVEN].values.tolist())]
-    boxes[['png_ymin', 'png_xmin', 'png_ymax', 'png_xmax']] = np.round(mapped, 1)
-
     out_dir.mkdir(parents=True, exist_ok=True)
     images.to_csv(out_dir / 'metadata.csv', index=False)
-    boxes.to_csv(out_dir / 'boxes.csv', index=False)
     failed[['sop_uid', 'dicom_path', 'error']].to_csv(out_dir / 'failed.csv', index=False)
 
     print(f'\nPrepared {len(images)} images, {len(failed)} failed (failed.csv)')
     print('Orientation:', images.groupby(['orientation_source', 'flipped']).size().to_dict())
     print('Splits:', images.groupby(str(Column.SPLIT_GROUP))[str(Column.PATIENT_ID)].agg(['nunique', 'size'])
           .rename(columns={'nunique': 'patients', 'size': 'images'}).to_dict('index'))
-    print('Boxes:', boxes.source.value_counts().to_dict())
-    print(f'Wrote metadata.csv, boxes.csv and failed.csv to {out_dir}')
+
+    if not all_images:
+        geometry = images.set_index('sop_uid')[GEOMETRY]
+        boxes = boxes[boxes.sop_uid.isin(geometry.index)].reset_index(drop=True)
+        mapped = [map_box(standard_box(source, given), *geometry.loc[sop_uid])
+                  for source, sop_uid, given in zip(boxes.source, boxes.sop_uid, boxes[GIVEN].values.tolist())]
+        boxes[['png_ymin', 'png_xmin', 'png_ymax', 'png_xmax']] = np.round(mapped, 1)
+        boxes.to_csv(out_dir / 'boxes.csv', index=False)
+        print('Boxes:', boxes.source.value_counts().to_dict())
+    print(f'Wrote to {out_dir}')
 
 
 if __name__ == '__main__':

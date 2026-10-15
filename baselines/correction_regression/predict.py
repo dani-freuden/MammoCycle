@@ -1,12 +1,13 @@
 """Correction-regression baseline: correct the anatomical-coordinates baseline's prior box with a trained model. CC only.
 
-For each lesion pair of data/prepare.py's pairs.csv, the model reads the crop around the current box and the crop
-around the anatomy box's centre, and predicts (dx, dy): the anatomy centre's error as a fraction of WINDOW. As in the
-NCC baseline, the prediction is the anatomy box moved so its centre lands on the corrected centre, the anatomical
-centre - WINDOW * (dx, dy).
+For each lesion pair of data/prepare.py's pairs.csv, the model reads both crops in anatomical coordinates, around
+a_current, the current box centre's anatomical coordinates, and predicts (du, dv): where the lesion moved, as a fraction
+of WINDOW. The corrected centre is a⁻¹(a_current + WINDOW * (du, dv), prior), and, as in the NCC baseline, the
+prediction is the anatomy box moved so its centre lands there.
 
 Writes predictions.csv to output_dir: pairs.csv with the anatomical baseline's pred_* renamed anat_* (the anatomy box),
-the model's output pred_dx and pred_dy, and pred_* (the moved box). evaluate.py scores it.
+the model's output pred_du and pred_dv, the corrected centre corrected_x and corrected_y, and pred_* (the moved box).
+evaluate.py scores it.
 
 Usage:
     python -m baselines.correction_regression.predict --checkpoint runs/correction_regression/lightning_logs/version_0/checkpoints/<best>.ckpt
@@ -24,6 +25,7 @@ from tqdm import tqdm
 from typer import Option
 
 from src.enums import Split
+from src.utils.anatomy import image_coords
 
 from ..anatomical_coordinates.predict import BOX
 from .data.prepare import WINDOW, CorrectionDataset
@@ -33,7 +35,7 @@ from .model.module import CorrectionRegressionModel
 @torch.no_grad()
 def predict_split(model: CorrectionRegressionModel, dataset: CorrectionDataset, batch_size: int,
                   num_workers: int) -> np.ndarray:
-    """The model's (dx, dy) for every pair of the dataset, (N, 2), in its order."""
+    """The model's (du, dv) for every pair of the dataset, (N, 2), in its order."""
     outputs = [model(batch['current'].to(model.device), batch['prior'].to(model.device)).cpu()
                for batch in tqdm(DataLoader(dataset, batch_size, num_workers=num_workers), desc='predict', unit='batch')]
 
@@ -58,13 +60,17 @@ def main(
     for split in splits:
         dataset = CorrectionDataset(pairs_csv, split)
         output = predict_split(model, dataset, batch_size, num_workers)
-        pairs.append(dataset.pairs.assign(pred_dx=output[:, 0], pred_dy=output[:, 1]))
+        corrected = np.array([image_coords(a, *dataset.anatomy[path]) for a, path in
+                              zip(dataset.pairs[['current_u', 'current_v']].values + WINDOW * output,
+                                  dataset.pairs.prior_path)])
+        pairs.append(dataset.pairs.assign(pred_du=output[:, 0], pred_dv=output[:, 1],
+                                          corrected_x=corrected[:, 0], corrected_y=corrected[:, 1]))
     pairs = pd.concat(pairs, ignore_index=True).rename(columns={f'pred_{c}': f'anat_{c}' for c in BOX})
     print(f'{len(pairs)} lesion pairs:', pairs.split_group.value_counts().to_dict())
 
     # Move the anatomy box by the corrected centre minus its centre.
-    shift_x = pairs.anat_x - WINDOW * pairs.pred_dx - (pairs.anat_xmin + pairs.anat_xmax) / 2
-    shift_y = pairs.anat_y - WINDOW * pairs.pred_dy - (pairs.anat_ymin + pairs.anat_ymax) / 2
+    shift_x = pairs.corrected_x - (pairs.anat_xmin + pairs.anat_xmax) / 2
+    shift_y = pairs.corrected_y - (pairs.anat_ymin + pairs.anat_ymax) / 2
     for c, shift in (('ymin', shift_y), ('xmin', shift_x), ('ymax', shift_y), ('xmax', shift_x)):
         pairs[f'pred_{c}'] = (pairs[f'anat_{c}'] + shift).round(1)
 

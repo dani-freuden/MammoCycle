@@ -1,11 +1,12 @@
 """Self-supervised data of the correction-regression baseline: pairs made from a single image, with no annotations.
 
-For each image of one split of the prepared EMBED set, a random point p of the breast (src.data.dataset.breast_mask) is
-the current crop's centre, and the prior crop, from the same image, is centred on c = p + (ex, ey), a random shift of up
-to max_shift PNG pixels each way. The target follows CorrectionDataset's convention, (prior crop centre - true point) /
-WINDOW, so (dx, dy) = (ex, ey) / WINDOW and the corrected centre c - WINDOW * (dx, dy) is p. The default max_shift,
-WINDOW / 2, keeps p inside the prior crop: about 29 mm on the Hologic images (0.1305 mm per PNG pixel). Each crop gets
-its own gamma, gain, blur and noise (src.data.augmentations.augment_intensity), and no spatial deformation.
+For each image of one split and view of the prepared EMBED set, a random point p of the breast
+(src.data.dataset.breast_mask) is the current crop's centre, and the prior crop, from the same image, is centred on
+c = p + (ex, ey), a random shift of up to max_shift PNG pixels each way. The target follows CorrectionDataset's
+convention, (prior crop centre - true point) / WINDOW, so (dx, dy) = (ex, ey) / WINDOW and the corrected centre
+c - WINDOW * (dx, dy) is p. The default max_shift, WINDOW / 2, keeps p inside the prior crop: about 29 mm on the Hologic
+images (0.1305 mm per PNG pixel). Each crop gets its own gamma, gain, blur and noise
+(src.data.augmentations.augment_intensity), and no spatial deformation.
 """
 from pathlib import Path
 
@@ -18,18 +19,18 @@ from torch.utils.data import Dataset
 
 from src.data.augmentations import augment_intensity
 from src.data.dataset import breast_mask
-from src.enums import Split
+from src.enums import Column, Split, View
 
 from ..correction_regression.data.prepare import WINDOW, crop
 
 
 class SelfSupervisedDataset(Dataset):
-    """One split of the prepared images, a new random pair per image every time, as CorrectionDataset gives them:
-    'current' and 'prior' crops and 'target' (dx, dy)."""
+    """One split and view of the prepared images, a new random pair per image every time, as CorrectionDataset gives
+    them: 'current' and 'prior' crops and 'target' (dx, dy)."""
 
-    def __init__(self, metadata_csv: Path, split: Split, max_shift: int = WINDOW // 2):
+    def __init__(self, metadata_csv: Path, split: Split, view: View = View.CC, max_shift: int = WINDOW // 2):
         metadata = pd.read_csv(metadata_csv)
-        files = metadata.file_path[metadata.split_group == str(split)]
+        files = metadata.file_path[metadata.split_group.eq(str(split)) & metadata[str(Column.VIEW)].eq(str(view))]
         self.paths = [str(metadata_csv.parent / file) for file in files]
         self.max_shift = max_shift
 

@@ -1,13 +1,13 @@
-"""Correction-regression baseline: regress the anatomical-coordinates baseline's error.
+"""Correction-regression baseline: regress where the lesion moved between the exams, in anatomical coordinates.
 
-The dataset crops both images, a 448 px window resized to 224x224: the current one around the current box centre, the
-prior one around the anatomical centre, the centre of the anatomical baseline's predicted box (pred_* in its
-predictions.csv). The target is (dx, dy) = anatomical centre - true prior box centre, as a fraction of the window, so the
-corrected centre is the anatomical centre - window * output.
+The dataset crops both images in anatomical coordinates (u, v), a WINDOW wide window resampled to 224x224, each around
+a_current, the current box centre's anatomical coordinates. The target is (du, dv) = (a_true - a_current) / WINDOW,
+where a_true is the true prior box centre's anatomical coordinates in the prior image, so the corrected centre is
+a⁻¹(a_current + WINDOW * output, prior).
 
-A batch is a dict of 'current' and 'prior', (B, 1, 224, 224) crops in [0, 1], and 'target', (B, 2) as (dx, dy).
-Validation also logs the distance from the corrected centre to the true one in PNG pixels, WINDOW * |target - output|,
-beside the anatomical baseline's on the same pairs, WINDOW * |target|.
+A batch is a dict of 'current' and 'prior', (B, 1, 224, 224) crops in [0, 1], and 'target', (B, 2) as (du, dv).
+Validation also logs the distance from the corrected centre to the true one in anatomical units, WINDOW * |target -
+output|, beside that of a_current itself (the anatomical mapping of the centre) on the same pairs, WINDOW * |target|.
 """
 from pathlib import Path
 
@@ -48,7 +48,7 @@ class CorrectionRegressionModel(L.LightningModule):
         self._val_errors: list[Tensor] = []  # (B, 2) per batch: the corrected and the anatomical centre's error
 
     def forward(self, current: Tensor, prior: Tensor) -> Tensor:
-        """The predicted (dx, dy), (B, 2), as a fraction of the window."""
+        """The predicted (du, dv), (B, 2), as a fraction of the window."""
         current_feat = self.backbone(self._normalize(current)).mean(dim=(2, 3))  # (B, 512)
         prior_feat = self.prior_reduce(self.backbone(self._normalize(prior))).flatten(1)  # (B, 64 * 7 * 7)
         features = torch.cat([current_feat, prior_feat], dim=1)
@@ -69,16 +69,16 @@ class CorrectionRegressionModel(L.LightningModule):
     def on_validation_epoch_end(self):
         errors = torch.cat(self._val_errors).float()
         self._val_errors = []
-        self.log_dict({'val/error_px/mean': errors[:, 0].mean(), 'val/error_px/median': errors[:, 0].median(),
-                       'val/anatomical_error_px/mean': errors[:, 1].mean(),
-                       'val/anatomical_error_px/median': errors[:, 1].median()})
+        self.log_dict({'val/error/mean': errors[:, 0].mean(), 'val/error/median': errors[:, 0].median(),
+                       'val/anatomical_error/mean': errors[:, 1].mean(),
+                       'val/anatomical_error/median': errors[:, 1].median()})
 
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters(), lr=self.hparams.learning_rate,
                                  weight_decay=self.hparams.weight_decay)
 
     def _loss(self, predicted: Tensor, target: Tensor) -> Tensor:
-        """Huber(dx_gt, predicted_dx) + Huber(dy_gt, predicted_dy)."""
+        """Huber(du_gt, predicted_du) + Huber(dv_gt, predicted_dv)."""
         delta = self.hparams.huber_delta
 
         return (F.huber_loss(predicted[:, 0], target[:, 0], delta=delta)

@@ -17,7 +17,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from torch.utils.data import DataLoader
 from typer import Option
 
-from src.enums import Split
+from src.enums import Split, View
 
 from ..correction_regression.data.prepare import WINDOW, CorrectionDataset
 from ..correction_regression.model.module import CorrectionRegressionModel
@@ -28,6 +28,7 @@ from .dataset import SelfSupervisedDataset
 def main(
     metadata_csv: Annotated[Path, Option(help='metadata.csv of the prepared images; the train split is used')]
         = Path('/data/rbg/users/dani_fr/embed_prepared_8bit/metadata.csv'),
+    view: Annotated[View, Option(help='View of the train images')] = View.CC,
     pairs_csv: Annotated[Path, Option(help='pairs.csv of correction_regression/data/prepare.py; dev is validated on')]
         = Path('./outputs/correction_regression/data/pairs.csv'),
     checkpoint: Annotated[Path, Option(help='mirai-shira checkpoint for the backbone')] = MIRAI_CHECKPOINT,
@@ -46,7 +47,7 @@ def main(
 ):
     module = CorrectionRegressionModel(checkpoint, huber_delta=huber_delta, learning_rate=learning_rate,
                                        weight_decay=weight_decay, dropout=dropout)
-    train = DataLoader(SelfSupervisedDataset(metadata_csv, Split.TRAIN, max_shift), batch_size, shuffle=True,
+    train = DataLoader(SelfSupervisedDataset(metadata_csv, Split.TRAIN, view, max_shift), batch_size, shuffle=True,
                        num_workers=num_workers)
     dev = DataLoader(CorrectionDataset(pairs_csv, Split.DEV), batch_size, num_workers=num_workers)
 

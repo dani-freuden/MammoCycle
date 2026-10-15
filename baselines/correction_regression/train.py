@@ -25,7 +25,7 @@ MIRAI_CHECKPOINT = Path('/data/rbg/users/dani_fr/projects/mirai-shira/runs/shifa
 
 
 def main(
-    pairs_csv: Annotated[Path, Option(help='pairs.csv of data/prepare.py')]
+    pairs_csv: Annotated[Path, Option(help='pairs.csv of data/prepare.py, with its anatomy.npz next to it')]
         = Path('./outputs/correction_regression/data/pairs.csv'),
     checkpoint: Annotated[Path, Option(help='mirai-shira checkpoint for the backbone')] = MIRAI_CHECKPOINT,
     output_dir: Annotated[Path, Option(help='Where the logs and checkpoints go')] = Path('./runs/correction_regression'),
@@ -33,8 +33,10 @@ def main(
     max_epochs: Annotated[int, Option(help='Epochs over the train split')] = 80,
     learning_rate: Annotated[float, Option(help='AdamW learning rate')] = 1e-4,
     weight_decay: Annotated[float, Option(help='AdamW weight decay')] = 1e-4,
-    huber_delta: Annotated[float, Option(help='Huber delta, in windows (0.05 is ~22 PNG pixels)')] = 0.05,
-    jitter: Annotated[int, Option(help='Train only: PNG pixels the prior crop centre moves, at most, in x and y')] = 64,
+    huber_delta: Annotated[float, Option(help='Huber delta, in windows (0.05 is 0.035 anatomical units, '
+                                              '~28 PNG pixels at the median lesion)')] = 0.05,
+    jitter: Annotated[float, Option(help='Train only: anatomical units the prior crop centre moves, at most, in u '
+                                         'and v (0.1 is ~80 PNG pixels at the median lesion)')] = 0.1,
     dropout: Annotated[float, Option(help='Dropout on the features going into the head')] = 0.3,
     num_workers: Annotated[int, Option(help='DataLoader workers')] = 16,
     gpu: Annotated[int, Option(help='GPU index to train on')] = 0,

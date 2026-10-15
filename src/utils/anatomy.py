@@ -134,6 +134,9 @@ def unit(v):
 def get_boundary_radius(mask, centroid, direction, step=0.5):
     """
     Distance from centroid to breast boundary along `direction`.
+
+    The mask is mirrored across its right edge, the chest wall, so a ray toward the chest wall runs on into the
+    mirrored breast and ends at the mirrored skin line, not at the image edge.
     """
     c = np.asarray(centroid, dtype=float)
     direction = unit(direction)
@@ -147,10 +150,10 @@ def get_boundary_radius(mask, centroid, direction, step=0.5):
         p = c + r * direction
         x, y = np.round(p).astype(int)
 
-        if x < 0 or x >= w or y < 0 or y >= h:
+        if x < 0 or x >= 2 * w or y < 0 or y >= h:
             break
 
-        if not mask[y, x]:
+        if not mask[y, x if x < w else 2 * w - 1 - x]:
             break
 
         last_inside_r = r
@@ -266,13 +269,64 @@ def map_prior_to_current(
     )
     
     
+def anatomical_frame_uv(centroid, nipple):
+    c = np.asarray(centroid, dtype=float)
+    n = np.asarray(nipple, dtype=float)
+
+    delta = n - c
+    d = np.linalg.norm(delta)
+
+    if d < 1e-8:
+        raise ValueError("Nipple and centroid are too close")
+
+    u = delta / d
+
+    # perpendicular
+    v = np.array([-u[1], u[0]])
+
+    # make v point visually upward in image coordinates
+    if v[1] > 0:
+        v = -v
+
+    return {
+        "centroid": c,
+        "u": u,
+        "v": v,
+        "scale": d,
+    }
+    
+    
+def to_anatomical_uv(point, frame_uv):
+    p = np.asarray(point, dtype=float)
+
+    q = p - frame_uv["centroid"]
+    d = frame_uv["scale"]
+
+    return np.array([
+        np.dot(q, frame_uv["u"]) / d,
+        np.dot(q, frame_uv["v"]) / d,
+    ])
+    
+def from_anatomical_uv(a, frame):
+    a = np.asarray(a, dtype=float)
+
+    return (
+        frame["centroid"]
+        + frame["scale"]
+        * (
+            a[0] * frame["u"]
+            + a[1] * frame["v"]
+        )
+    )
     
 
 def boundary_radii(mask, centroid, num_angles, step=0.5):
     """get_boundary_radius in num_angles directions at once, direction k at angle 2 pi k / num_angles (y down).
 
-    A polar resampling of the mask: row k is the ray in direction k, sampled every step pixels from the centroid.
+    A polar resampling of the mask, mirrored across its right edge as in get_boundary_radius: row k is the ray in
+    direction k, sampled every step pixels from the centroid.
     """
+    mask = np.hstack([mask, mask[:, ::-1]])
     h, w = mask.shape
     c = np.asarray(centroid, dtype=float)
     max_radius = max(np.hypot(x - c[0], y - c[1]) for x in (0, w) for y in (0, h)) + 1  # every ray leaves the image
@@ -304,11 +358,27 @@ def anatomical_coords(points, mask, centroid, nipple, num_angles=720):
     return np.stack([along, across], axis=-1) / np.maximum(radius, 1e-6)[:, None]
 
 
+def image_coords(a, centroid, nipple, radii):
+    """The inverse of anatomical_coords: anatomical coordinates a [..., 2] -> image points (x, y) [..., 2].
+
+    radii are boundary_radii(mask, centroid, num_angles), any num_angles.
+    """
+    a = np.asarray(a, dtype=float)
+    c = np.asarray(centroid, dtype=float)
+    ref = unit(np.asarray(nipple, dtype=float) - c)
+    angle = np.arctan2(ref[1], ref[0]) + np.arctan2(a[..., 1], a[..., 0])  # in the image, y down
+    radius = np.interp(angle, np.arange(len(radii)) * 2 * np.pi / len(radii), radii, period=2 * np.pi)
+    distance = np.hypot(a[..., 0], a[..., 1]) * radius
+
+    return c + distance[..., None] * np.stack([np.cos(angle), np.sin(angle)], axis=-1)
+
+
 def anatomical_map(image, stride, threshold=0.01):
     """Anatomical coordinates of every stride x stride cell centre of a CC image [H, W] -> [2, H / stride, W / stride].
 
-    CC only: the nipple search assumes a CC view with the chest wall on the right. Cell centres follow the tracker's
-    convention (pixel i covers [i, i + 1)), half a pixel off the index coordinates used here.
+    CC only: the nipple search and the mirrored boundary assume a CC view with the chest wall on the right. Cell
+    centres follow the tracker's convention (pixel i covers [i, i + 1)), half a pixel off the index coordinates used
+    here.
     """
     mask = get_breast_mask(image, threshold)
     centroid = get_centroid(mask)

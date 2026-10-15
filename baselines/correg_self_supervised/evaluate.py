@@ -19,7 +19,7 @@ from torch.utils.data import ConcatDataset, DataLoader, Dataset
 from tqdm import tqdm
 from typer import Option
 
-from src.enums import Split
+from src.enums import Split, View
 
 from ..correction_regression.data.prepare import WINDOW
 from ..correction_regression.model.module import CorrectionRegressionModel
@@ -42,6 +42,7 @@ def main(
     checkpoint: Annotated[Path, Option(help='Checkpoint of train.py')],
     metadata_csv: Annotated[Path, Option(help='metadata.csv of the prepared images')]
         = Path('/data/rbg/users/dani_fr/embed_prepared_8bit/metadata.csv'),
+    view: Annotated[View, Option(help='View of the images')] = View.CC,
     splits: Annotated[list[Split], Option(help='Splits to score; repeat the option for several')]
         = [Split.TRAIN, Split.DEV],
     repeats: Annotated[int, Option(help='Pairs per image')] = 5,
@@ -57,7 +58,7 @@ def main(
                                                            weights_only=False).eval()
     rows = {}
     for split in splits:
-        dataset = SelfSupervisedDataset(metadata_csv, split, max_shift)
+        dataset = SelfSupervisedDataset(metadata_csv, split, view, max_shift)
         torch.manual_seed(0)  # the DataLoader seeds its workers from it, so every checkpoint sees the same pairs
         error = errors(model, ConcatDataset([dataset] * repeats), batch_size, num_workers)
         rows[f'{split} ({len(dataset)} images x {repeats})'] = {
