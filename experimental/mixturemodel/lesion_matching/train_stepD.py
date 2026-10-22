@@ -5,11 +5,14 @@ NCC. The PNGs are resampled once from predict.SPACING_MM to CFG.spacing_mm and k
 Train pairs are used in both directions, since both boxes are known. After every epoch the dev pairs are scored with
 the search window on p_anat and fused with the prior over TAUS; the epoch with the best truncated mean at its best tau
 is saved to output_dir/best.pt. That model then predicts every pair, tau is chosen on dev again, and predictions.csv
-is written as predict.py writes it.
+is written as predict.py writes it. The network starts from ImageNet, or with --init from a best.pt (e.g. a
+self-supervised one), whose MatcherConfig (kernel, search window) it then keeps; --checkpoint keeps its own too.
 
 Usage (from the repo root):
     python -m experimental.mixturemodel.lesion_matching.train_stepD --gpu 0 --workers 32
     python -m baselines.anatomical_coordinates.evaluate --output-dir outputs/stepD_matcher
+    python -m experimental.mixturemodel.lesion_matching.train_stepD --init outputs/stepD_selfsup_k31/best.pt \
+        --output-dir outputs/stepD_k31_finetune --gpu 0 --workers 32
 """
 import sys
 from dataclasses import asdict
@@ -71,8 +74,15 @@ def main(
     learning_rate: Annotated[float, Option(help='Peak learning rate of the head; the backbone gets 0.1 of it')]
         = 3e-4,
     workers: Annotated[int, Option(help='Parallel pairs for the anatomy, and data loader workers')] = 16,
+    checkpoint: Annotated[Path | None, Option(help='Skip training and predict with this best.pt')] = None,
+    init: Annotated[Path | None, Option(help='Fine-tune from this best.pt, with its MatcherConfig (e.g. '
+                                             'outputs/stepD_selfsup_k31/best.pt)')] = None,
+    reverse: Annotated[bool, Option(help='Know the earlier exam\'s box and predict the later one (the "current" '
+                                         'columns then hold the earlier exam)')] = False,
 ):
-    pairs, anat, cases = load_cases(data_dir, workers)
+    start = torch.load(checkpoint or init, map_location='cpu') if checkpoint or init else None
+    cfg = MatcherConfig(**start['cfg']) if start else CFG  # the kernel and window go with the weights
+    pairs, anat, cases = load_cases(data_dir, workers, reverse)
     paths = sorted(set(pairs.current_path) | set(pairs.prior_path))
     with Pool(workers) as pool:
         images = dict(zip(paths, tqdm(pool.imap(load_image, paths), total=len(paths), desc='images', unit='image')))
@@ -87,7 +97,7 @@ def main(
     best = {'tmean30': np.inf}
 
     def validate(model, epoch):
-        for case, smap in zip(dev, score_maps(model, PairDataset(dev, CFG, train=False), device)):
+        for case, smap in zip(dev, score_maps(model, PairDataset(dev, cfg, train=False), device)):
             case['smap'] = smap
         rows = sweep_tau(dev, prior, TAUS, CFG.spacing_mm)
         print(f'\nepoch {epoch}, dev')
@@ -96,16 +106,18 @@ def main(
         tmean30 = dict(rows)[f'fused tau={tau:.4g}']['tmean30']
         if tmean30 < best['tmean30']:
             best.update(tmean30=tmean30, epoch=epoch)
-            torch.save({'model': model.state_dict(), 'cfg': asdict(CFG), 'epoch': epoch, 'tau': tau},
+            torch.save({'model': model.state_dict(), 'cfg': asdict(cfg), 'epoch': epoch, 'tau': tau},
                        output_dir / 'best.pt')
         print(f'best: epoch {best["epoch"]}, tmean30 {best["tmean30"]:.2f} mm')
 
-    model = SiameseMatcher(CFG)
-    train_matcher(model, PairDataset(train, CFG, train=True), None, epochs=epochs, batch_size=batch_size,
-                  lr=learning_rate, device=device, num_workers=workers, val_fn=validate)
-
-    model.load_state_dict(torch.load(output_dir / 'best.pt')['model'])
-    smaps = score_maps(model, PairDataset(matcher, CFG, train=False), device)
+    model = SiameseMatcher(cfg)
+    if init:
+        model.load_state_dict(start['model'])
+    if checkpoint is None:
+        train_matcher(model, PairDataset(train, cfg, train=True), None, epochs=epochs, batch_size=batch_size,
+                      lr=learning_rate, device=device, num_workers=workers, val_fn=validate)
+    model.load_state_dict(torch.load(checkpoint or output_dir / 'best.pt')['model'])
+    smaps = score_maps(model, PairDataset(matcher, cfg, train=False), device)
     points = [{name: rescale_points(p, 1 / SCALE) for name, p in decode_all(smap, prior, case, CFG.spacing_mm,
                                                                             TAUS).items()}
               for smap, case in zip(tqdm(smaps, desc='decode', unit='pair'), matcher)]

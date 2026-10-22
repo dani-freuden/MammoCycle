@@ -107,8 +107,10 @@ def main(
         = Path('./outputs/anatomical_coordinates_NCC'),
     search_radius: Annotated[int, Option(help='PNG pixels around the anatomy box centre to search')] = SEARCH_RADIUS,
     workers: Annotated[int, Option(help='Parallel pairs')] = 16,
+    reverse: Annotated[bool, Option(help='Know the earlier exam\'s box and predict the later one (the "current" '
+                                         'columns then hold the earlier exam)')] = False,
 ):
-    pairs = lesion_pairs(data_dir, splits)
+    pairs = lesion_pairs(data_dir, splits, reverse)
     print(f'{len(pairs)} lesion pairs:', pairs.split_group.value_counts().to_dict())
 
     tasks = [{'current_path': current_path, 'prior_path': prior_path, 'current_box': current_box,

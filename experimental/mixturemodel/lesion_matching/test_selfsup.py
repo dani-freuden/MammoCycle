@@ -21,8 +21,8 @@ import selfsup
 _norm = selfsup.normalize_crop
 selfsup.normalize_crop = lambda x, rng=None: x
 cfg = MatcherConfig(pretrained=False)
-dot_cfg = DeformConfig(p_superpos=0, p_fade=0, noise_rel=(0, 0), p_sharpen=0, p_blur=0, bias_field=0,
-                       p_real_box=1.0, p_lesion_scale=1.0, elastic_mm=4.0)
+dot_cfg = DeformConfig(p_superpos=0, p_texture_swap=0, p_fade=0, noise_rel=(0, 0), p_sharpen=0, p_blur=0,
+                       bias_field=0, p_real_box=1.0, p_lesion_scale=1.0, elastic_mm=4.0)
 def dot_image(i):
     r = np.random.default_rng(1000 + i)
     img = cv2.GaussianBlur(r.standard_normal((1200, 1000)).astype(np.float32), (0, 0), 3)
@@ -30,18 +30,20 @@ def dot_image(i):
     img = add_blob(img, p, 3.0, 50.0)
     return {"img": img, "boxes": [(p[0], p[1], 40, 40)]}
 ds = SingleImageSSLDataset(20, dot_image, cfg, dot_cfg, fixed_seed=0)
-errs = []
-for i in range(60):
-    s = ds[i]
-    x = s["search"][0].numpy()
+def dot_centre(x):
     w = np.clip(x - 0.5 * x.max(), 0, None)              # pixels above half the dot's peak
     yy, xx = np.mgrid[0:x.shape[0], 0:x.shape[1]]
-    found = np.array([(w * xx).sum() / w.sum(), (w * yy).sum() / w.sum()])
+    return np.array([(w * xx).sum() / w.sum(), (w * yy).sum() / w.sum()])
+errs, t_errs = [], []
+for i in range(60):
+    s = ds[i]
     gt = apply_affine(grid_affine(cfg), s["gt_grid"].numpy()[None])[0]
-    errs.append(np.linalg.norm(found - gt))
+    errs.append(np.linalg.norm(dot_centre(s["search"][0].numpy()) - gt))
+    t_errs.append(np.linalg.norm(dot_centre(s["template"][0].numpy()) - (cfg.template_px - 1) / 2))  # deformed too
 selfsup.normalize_crop = _norm
-print(f"GT check over 60 deformed samples: mean {np.mean(errs):.2f} px, max {np.max(errs):.2f} px")
-assert np.max(errs) < 1.0
+print(f"GT check over 60 deformed samples: mean {np.mean(errs):.2f} px, max {np.max(errs):.2f} px; "
+      f"template centre: max {np.max(t_errs):.2f} px")
+assert np.max(errs) < 1.0 and np.max(t_errs) < 1.0
 
 # ---- 2. toy "unlabeled images" and toy labeled pairs -------------------------------------
 small = MatcherConfig(spacing_mm=0.4, template_px=128, search_px=256, kernel_cells=7,

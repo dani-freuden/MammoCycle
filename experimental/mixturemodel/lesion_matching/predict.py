@@ -50,10 +50,10 @@ def anatomy(task: dict) -> tuple:
     return anatomy_predict(task), get_centroid(breast_mask(np.asarray(Image.open(task['prior_path']))))
 
 
-def load_cases(data_dir: Path, workers: int) -> tuple:
-    """The lesion pairs of every split, their anatomy boxes [N, 4] and one B5 case per pair: p_anat, centroid and
-    p_gt (x, y) in PNG pixels."""
-    pairs = lesion_pairs(data_dir, list(Split))
+def load_cases(data_dir: Path, workers: int, reverse: bool = False) -> tuple:
+    """The lesion pairs of every split (lesion_pairs, reverse as there), their anatomy boxes [N, 4] and one B5 case
+    per pair: p_anat, centroid and p_gt (x, y) in PNG pixels."""
+    pairs = lesion_pairs(data_dir, list(Split), reverse)
     print(f'{len(pairs)} lesion pairs:', pairs.split_group.value_counts().to_dict())
 
     tasks = [{'current_path': current_path, 'prior_path': prior_path, 'current_box': current_box}
@@ -128,8 +128,10 @@ def main(
     data_dir: Annotated[Path, Option(help='Output folder of scripts/misc/prepare_embed_dataset.py')] = Path(DATA_DIR),
     output_dir: Annotated[Path, Option(help='Where predictions.csv goes')] = Path('./outputs/b5_prior_fusion'),
     workers: Annotated[int, Option(help='Parallel pairs')] = 16,
+    reverse: Annotated[bool, Option(help='Know the earlier exam\'s box and predict the later one (the "current" '
+                                         'columns then hold the earlier exam)')] = False,
 ):
-    pairs, anat, cases = load_cases(data_dir, workers)
+    pairs, anat, cases = load_cases(data_dir, workers, reverse)
     train = (pairs.split_group == str(Split.TRAIN)).values
     prior = AnatomicalPrior.fit(local_residuals_mm([c for c, t in zip(cases, train) if t], SPACING_MM))
     print('prior:', prior.describe())

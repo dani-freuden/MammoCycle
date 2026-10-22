@@ -28,9 +28,10 @@ from tqdm import tqdm
 from typer import Option
 
 from src.data.dataset import breast_mask
-from src.data.records import load_records, to_pairs
-from src.enums import Split, View
+from src.enums import Split
 from src.utils.anatomy import anatomical_frame_uv, from_anatomical_uv, get_centroid, get_nipple_jas_cc, map_prior_to_current, to_anatomical_uv
+
+from ..anatomical_coordinates.predict import lesion_pairs
 
 
 load_dotenv()
@@ -85,40 +86,6 @@ def predict_box(task: dict) -> tuple:
     return ymin, xmin, ymax, xmax
 
 
-def lesion_pairs(data_dir: Path, splits: list[Split]) -> pd.DataFrame:
-    """One row per pair of CC exams of a breast, a later (current) and an earlier (prior) one, and mammotracker lesion
-    boxed in both exams."""
-    metadata = pd.read_csv(data_dir / 'metadata.csv', dtype={'patient_id': str, 'exam_id': str, 'sop_uid': str})
-    metadata['mm_per_pixel'] = metadata.pixel_spacing * metadata.cols / metadata.resized_width
-    boxes = pd.read_csv(data_dir / 'boxes.csv', dtype={'sop_uid': str})
-    boxes = (boxes[boxes.source == 'mammotracker']
-             .merge(metadata[['sop_uid', 'exam_id', 'laterality', 'mm_per_pixel']], on='sop_uid')
-             .rename(columns={f'png_{c}': c for c in BOX}))
-    by_image = {key: group[['lesion_id', 'kind', 'mm_per_pixel', *BOX]]
-                for key, group in boxes.groupby(['exam_id', 'laterality'])}
-
-    rows = []
-    for split, records in load_records(data_dir, splits, View.CC).items():
-        for record in to_pairs(records):
-            prior, current = record.exams
-            prior_boxes, current_boxes = (by_image.get((exam.exam_id, str(record.side))) for exam in record.exams)
-            if prior_boxes is None or current_boxes is None:
-                continue
-
-            shared = prior_boxes.merge(current_boxes, on='lesion_id', suffixes=('_prior', '_current'))
-            for lesion in shared.to_dict('records'):
-                rows.append({'split_group': str(split), 'patient_id': record.patient_id, 'laterality': str(record.side),
-                             'lesion_id': lesion['lesion_id'], 'kind': lesion['kind_current'],
-                             'prior_exam_id': prior.exam_id, 'prior_date': prior.date,
-                             'current_exam_id': current.exam_id, 'current_date': current.date,
-                             'prior_path': str(prior.path), 'current_path': str(current.path),
-                             **{f'prior_{c}': lesion[f'{c}_prior'] for c in BOX},
-                             **{f'current_{c}': lesion[f'{c}_current'] for c in BOX},
-                             'prior_mm_per_pixel': lesion['mm_per_pixel_prior']})
-
-    return pd.DataFrame(rows)
-
-
 def main(
     data_dir: Annotated[Path, Option(help='Output folder of scripts/misc/prepare_embed_dataset.py')] = Path(DATA_DIR),
     splits: Annotated[list[Split], Option(help='Splits to predict; repeat the option for several')]
@@ -126,8 +93,10 @@ def main(
     output_dir: Annotated[Path, Option(help='Where predictions.csv goes')]
         = Path('./outputs/anatomical_coordinates_uv'),
     workers: Annotated[int, Option(help='Parallel pairs')] = 16,
+    reverse: Annotated[bool, Option(help='Know the earlier exam\'s box and predict the later one (the "current" '
+                                         'columns then hold the earlier exam)')] = False,
 ):
-    pairs = lesion_pairs(data_dir, splits)
+    pairs = lesion_pairs(data_dir, splits, reverse)
     print(f'{len(pairs)} lesion pairs:', pairs.split_group.value_counts().to_dict())
 
     tasks = [{'current_path': current_path, 'prior_path': prior_path, 'current_box': current_box}

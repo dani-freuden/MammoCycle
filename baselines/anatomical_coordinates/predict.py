@@ -84,9 +84,10 @@ def predict_box(task: dict) -> tuple:
     return ymin, xmin, ymax, xmax
 
 
-def lesion_pairs(data_dir: Path, splits: list[Split]) -> pd.DataFrame:
+def lesion_pairs(data_dir: Path, splits: list[Split], reverse: bool = False) -> pd.DataFrame:
     """One row per pair of CC exams of a breast, a later (current) and an earlier (prior) one, and mammotracker lesion
-    boxed in both exams."""
+    boxed in both exams. With reverse the roles swap: the earlier exam is the current one, whose box is known, and the
+    later one is the prior, where the box is predicted."""
     metadata = pd.read_csv(data_dir / 'metadata.csv', dtype={'patient_id': str, 'exam_id': str, 'sop_uid': str})
     metadata['mm_per_pixel'] = metadata.pixel_spacing * metadata.cols / metadata.resized_width
     boxes = pd.read_csv(data_dir / 'boxes.csv', dtype={'sop_uid': str})
@@ -99,8 +100,8 @@ def lesion_pairs(data_dir: Path, splits: list[Split]) -> pd.DataFrame:
     rows = []
     for split, records in load_records(data_dir, splits, View.CC).items():
         for record in to_pairs(records):
-            prior, current = record.exams
-            prior_boxes, current_boxes = (by_image.get((exam.exam_id, str(record.side))) for exam in record.exams)
+            prior, current = record.exams[::-1] if reverse else record.exams
+            prior_boxes, current_boxes = (by_image.get((exam.exam_id, str(record.side))) for exam in (prior, current))
             if prior_boxes is None or current_boxes is None:
                 continue
 
@@ -125,8 +126,10 @@ def main(
     output_dir: Annotated[Path, Option(help='Where predictions.csv goes')]
         = Path('./outputs/anatomical_coordinates'),
     workers: Annotated[int, Option(help='Parallel pairs')] = 16,
+    reverse: Annotated[bool, Option(help='Know the earlier exam\'s box and predict the later one (the "current" '
+                                         'columns then hold the earlier exam)')] = False,
 ):
-    pairs = lesion_pairs(data_dir, splits)
+    pairs = lesion_pairs(data_dir, splits, reverse)
     print(f'{len(pairs)} lesion pairs:', pairs.split_group.value_counts().to_dict())
 
     tasks = [{'current_path': current_path, 'prior_path': prior_path, 'current_box': current_box}

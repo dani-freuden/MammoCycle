@@ -168,16 +168,19 @@ class SiameseMatcher(nn.Module):
         return self.head(r)[:, 0]
 
 
-def soft_target_ce(logits, gt_grid, sigma_cells):
+def soft_target_ce(logits, gt_grid, sigma_cells, valid=None):
     """Cross-entropy between the spatial softmax and a small Gaussian around the
     GT cell. A softmax over cells is a distribution over the lesion location,
-    so its log can be added to the log prior at inference."""
+    so its log can be added to the log prior at inference. valid [B, H, W], if
+    given, marks the cells the logits can reach; the target keeps off the rest."""
     B, H, W = logits.shape
     jj = torch.arange(W, device=logits.device).view(1, 1, W)
     ii = torch.arange(H, device=logits.device).view(1, H, 1)
     d2 = (jj - gt_grid[:, 0].view(B, 1, 1)) ** 2 + (ii - gt_grid[:, 1].view(B, 1, 1)) ** 2
     q = torch.exp(-d2 / (2 * sigma_cells ** 2))
-    q = q / q.sum((1, 2), keepdim=True)
+    if valid is not None:
+        q = q * valid  # masked logits are -1e20, so any target mass there swamps the loss
+    q = q / q.sum((1, 2), keepdim=True).clamp_min(1e-30)
     logp = F.log_softmax(logits.reshape(B, -1), -1).reshape(B, H, W)
     return -(q * logp).sum((1, 2)).mean()
 

@@ -2,11 +2,13 @@
 Self-supervised pretraining for the Step D matcher from SINGLE images.
 
 Idea: take one mammogram, pick a point p (a real annotated lesion or a random
-point in the breast), cut the template around p from the image as-is, and cut
-the search window from a randomly deformed and re-rendered copy of the same
-image. Because we generated the deformation, we know exactly where p lands in
-the search window -> a training pair with exact ground truth, for free, from
-every image you have (no prior annotation needed).
+point in the breast), cut the template around p from a mildly deformed copy
+(p kept at its centre), and cut the search window from a randomly deformed and
+re-rendered copy of the same image. Both sides are re-rendered independently,
+so neither is the image as it is and they share no exact pixels. Because we
+generated the deformation, we know exactly where p lands in the search window
+-> a training pair with exact ground truth, for free, from every image you
+have (no prior annotation needed).
 
 The output dict has the same keys/shapes as stepD_matcher.PairDataset, so the
 same model, loss and training loop are used unchanged.
@@ -18,7 +20,8 @@ What the deformation simulates (all magnitudes in DeformConfig):
   appearance - smooth multiplicative bias field (exposure / density change),
                superposition of other tissue (3D -> 2D projection changes),
                blur / sharpening (vendor processing), gamma/contrast,
-               fresh independent noise, optional lesion fading
+               resolution changes, fresh independent noise, optional
+               lesion fading
 The network learns to be invariant to exactly these changes - nothing more.
 
 Ground truth: the search crop is rendered by sampling the source image at
@@ -42,26 +45,36 @@ from stepD_matcher import MatcherConfig, box_mask, normalize_crop, search_px_to_
 
 @dataclass
 class DeformConfig:
+    # Calibrated on 2026-10-18 (calibrate_deform.py): NCC finds the point within 5 mm in 26 / 44 / 48% of these
+    # pairs with a 14.4 mm / 1.5 x box / 51 mm template, against 24 / 40 / 42% on the real annotated pairs.
     # --- geometry ---
-    rot_deg: float = 10.0
-    scale_range: float = 0.10          # each axis independently in [1-s, 1+s] -> anisotropic
+    rot_deg: float = 15.0
+    scale_range: float = 0.20          # each axis independently in [1-s, 1+s] -> anisotropic
     shear: float = 0.05
-    elastic_mm: float = 3.0            # sd of control-point displacement
+    elastic_mm: float = 6.0            # sd of control-point displacement
     elastic_spacing_mm: float = 25.0   # control-point spacing (smoothness)
     max_strain: float = 0.2            # cap on local stretch |grad d|: keeps the map
                                        # invertible (no folding) and the warp realistic
-    p_lesion_scale: float = 0.5
-    lesion_scale: tuple = (0.75, 1.33) # local size change at p (log-uniform)
+    p_lesion_scale: float = 0.7
+    lesion_scale: tuple = (0.6, 1.6)   # local size change at p (log-uniform)
     # --- appearance ---
-    bias_field: float = 0.25           # max amplitude of log multiplicative field
-    superpos: tuple = (0.0, 0.3)       # weight of blended-in other tissue
-    p_superpos: float = 0.5
-    p_blur: float = 0.4
-    blur_px: tuple = (0.3, 1.2)
+    bias_field: float = 0.5            # max amplitude of log multiplicative field
+    superpos: tuple = (0.2, 0.5)       # weight of blended-in other tissue (its breast only)
+    p_superpos: float = 0.9
+    p_texture_swap: float = 1.0        # replace this share of the fine detail (below texture_swap_mm) with
+    texture_swap: tuple = (0.8, 1.0)   # another breast region's, keeping the coarse structure: overlap re-mixed
+    texture_swap_mm: float = 4.0       # by another compression. What makes a small patch unreliable, as in real pairs
+    p_blur: float = 0.5
+    blur_px: tuple = (0.5, 1.5)
     p_sharpen: float = 0.3
-    noise_rel: tuple = (0.0, 0.05)     # fresh noise, relative to crop std (both sides)
-    p_fade: float = 0.15
+    noise_rel: tuple = (0.02, 0.15)    # fresh noise, relative to crop std (both sides)
+    p_resample: float = 0.5            # resolution jitter, each side on its own: down by a factor
+    resample: tuple = (1.0, 2.0)       # in this range, then back up
+    p_fade: float = 0.3
     fade: tuple = (0.2, 0.7)           # fraction of lesion contrast removed
+    # --- the template side, so that neither crop is the image as it is ---
+    template_deform: float = 0.5       # the template gets this fraction of the search's geometric
+                                       # deformation, with the lesion kept at its centre
     # --- where to put the "lesion" ---
     p_real_box: float = 0.5            # use a real annotated box when the image has one
     texture_bias: float = 0.5          # prob. of preferring a textured point over a uniform one
@@ -107,9 +120,7 @@ class SingleImageSSLDataset(torch.utils.data.Dataset):
         if boxes and rng.random() < self.d.p_real_box:
             cx, cy, w, h = boxes[int(rng.integers(len(boxes)))]
             return np.array([cx, cy], float), np.array([w, h], float)
-        r = max(1, int(round(self.d.edge_margin_mm / sp)))
-        inner = cv2.erode(mask.astype(np.uint8), np.ones((2 * r + 1, 2 * r + 1), np.uint8)) > 0
-        ys, xs = np.nonzero(inner)
+        ys, xs = np.nonzero(self._inner(mask))
         if len(xs) == 0:
             return None, None
         pick = rng.integers(len(xs), size=4)
@@ -139,29 +150,20 @@ class SingleImageSSLDataset(torch.utils.data.Dataset):
             return None
         T, S = m.template_px, m.search_px
 
-        # ---------------- template: the image as it is -------------------
-        tmpl = warp_crop(img, crop_affine(p, (T, T)), (T, T))
+        # ---------------- template: deformed too, the lesion kept at the centre ----
+        A_t, disp_t = self.random_warp(T, rng, d.template_deform)
+        c_t = np.full(2, (T - 1) / 2)
+        disp_t -= _bilinear(disp_t, c_t)                    # no displacement at the centre
+        tmpl = _remap(img, _sampling_map(A_t, disp_t, p - A_t @ c_t))
         tmpl = self.render_template(tmpl, rng)
 
         # ---------------- search geometry ---------------------------------
-        th = np.deg2rad(rng.uniform(-d.rot_deg, d.rot_deg))
-        R = np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
-        Sc = np.diag(1 + rng.uniform(-d.scale_range, d.scale_range, 2))
-        Sh = np.array([[1, rng.uniform(-d.shear, d.shear)], [0, 1]])
-        A = R @ Sc @ Sh                                     # image px per crop px
+        A, disp = self.random_warp(S, rng)                  # A: image px per crop px
         uc = (S - 1) / 2
         lim = 0.85 * m.max_offset_mm / m.spacing_mm         # GT anywhere on the grid
         target = uc + rng.uniform(-lim, lim, 2)             # where p should land (pre-elastic)
         t = p - A @ target
         M = np.hstack([A, t[:, None]])                      # crop px -> image px
-
-        g = max(2, int(round(S * m.spacing_mm / d.elastic_spacing_mm))) + 1
-        coarse = rng.normal(0, d.elastic_mm / m.spacing_mm, (g, g, 2)).astype(np.float32)
-        disp = cv2.resize(coarse, (S, S), interpolation=cv2.INTER_CUBIC)   # (S,S,2) crop px
-        J = np.stack(np.gradient(disp, axis=(0, 1)), -1)                   # (S,S,2,2) partials
-        strain = np.sqrt((J ** 2).sum((-1, -2))).max()
-        if strain > d.max_strain:
-            disp *= d.max_strain / strain
 
         q = apply_affine(invert_affine(M), p)[0]
         u = q.copy()
@@ -173,9 +175,7 @@ class SingleImageSSLDataset(torch.utils.data.Dataset):
         if np.any(gt_grid < 0) or np.any(gt_grid > m.out_cells - 1):
             return None
 
-        uu, vv = np.meshgrid(np.arange(S, dtype=np.float32), np.arange(S, dtype=np.float32))
-        V = np.stack([uu + disp[..., 0], vv + disp[..., 1]], -1)
-        X = V @ A.T.astype(np.float32) + t.astype(np.float32)          # (S,S,2) image px
+        X = _sampling_map(A, disp, t)                                   # (S,S,2) image px
         if rng.random() < d.p_lesion_scale:                             # lesion grows/shrinks
             k = np.exp(rng.uniform(*np.log(d.lesion_scale)))
             rho = max(box) / 2
@@ -183,14 +183,11 @@ class SingleImageSSLDataset(torch.utils.data.Dataset):
             s = 1 + (k - 1) * np.exp(-(Y ** 2).sum(-1) / (2 * rho ** 2))
             X = p.astype(np.float32) + Y * s[..., None]
 
-        mx = np.ascontiguousarray(X[..., 0], dtype=np.float32)
-        my = np.ascontiguousarray(X[..., 1], dtype=np.float32)
-        search = cv2.remap(img, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-        inside = cv2.remap(mask.astype(np.uint8), mx, my, cv2.INTER_NEAREST,
-                           borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        search = _remap(img, X)
+        inside = _remap(mask.astype(np.uint8), X, cv2.INTER_NEAREST)
         if inside.mean() < d.min_breast_frac:
             return None
-        search = self.render_search(search, img, mask, u, box, rng)
+        search = self.render_search(search, img, mask, inside, u, box, rng)
 
         return {"template": torch.from_numpy(np.stack([tmpl, box_mask(T, box)])).float(),
                 "search": torch.from_numpy(search[None]).float(),
@@ -198,9 +195,37 @@ class SingleImageSSLDataset(torch.utils.data.Dataset):
                 "M_grid": torch.zeros(2, 3, dtype=torch.float64),   # not an affine crop
                 "idx": -1}
 
+    def random_warp(self, S, rng, strength=1.0):
+        """A random affine A (image px per crop px) and a smooth elastic field (S, S, 2) in crop px, with
+        strength x the geometric magnitudes of DeformConfig."""
+        d, m = self.d, self.m
+        th = np.deg2rad(rng.uniform(-d.rot_deg, d.rot_deg) * strength)
+        R = np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
+        Sc = np.diag(1 + rng.uniform(-d.scale_range, d.scale_range, 2) * strength)
+        Sh = np.array([[1, rng.uniform(-d.shear, d.shear) * strength], [0, 1]])
+
+        disp = strength * d.elastic_mm / m.spacing_mm * self._smooth_field(S, d.elastic_spacing_mm, rng)
+        J = np.stack(np.gradient(disp, axis=(0, 1)), -1)                   # (S,S,2,2) partials
+        strain = np.sqrt((J ** 2).sum((-1, -2))).max()
+        if strain > d.max_strain:
+            disp *= d.max_strain / strain
+        return R @ Sc @ Sh, disp
+
+    def _smooth_field(self, S, spacing_mm, rng):
+        """A smooth random displacement field (S, S, 2): standard normal control points spacing_mm apart,
+        cubic-interpolated."""
+        g = max(2, int(round(S * self.m.spacing_mm / spacing_mm))) + 1
+        coarse = rng.normal(0, 1, (g, g, 2)).astype(np.float32)
+        return cv2.resize(coarse, (S, S), interpolation=cv2.INTER_CUBIC)
+
     # ---------------- appearance ----------------------------------------
     def _blur_sharpen_noise(self, x, rng):
         d = self.d
+        if rng.random() < d.p_resample:                     # coarser detector / processing
+            h, w = x.shape
+            f = rng.uniform(*d.resample)
+            small = cv2.resize(x, (max(1, round(w / f)), max(1, round(h / f))), interpolation=cv2.INTER_AREA)
+            x = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
         if rng.random() < d.p_blur:
             x = cv2.GaussianBlur(x, (0, 0), rng.uniform(*d.blur_px))
         elif rng.random() < d.p_sharpen:
@@ -214,7 +239,7 @@ class SingleImageSSLDataset(torch.utils.data.Dataset):
         # light, independent processing so neither side keeps the exact pixel noise
         return normalize_crop(self._blur_sharpen_noise(x, rng), rng)
 
-    def render_search(self, x, img, mask, u, box, rng):
+    def render_search(self, x, img, mask, inside, u, box, rng):
         d, S = self.d, x.shape[0]
         if rng.random() < d.p_fade:                         # lesion less visible in the prior
             rho = max(2.0, max(box) / 2)
@@ -227,13 +252,52 @@ class SingleImageSSLDataset(torch.utils.data.Dataset):
             f = cv2.resize(c, (S, S), interpolation=cv2.INTER_CUBIC)
             x = x * np.exp(rng.uniform(0, d.bias_field) * f / (np.abs(f).max() + 1e-6))
         if rng.random() < d.p_superpos:                     # different tissue overlap
-            ys, xs = np.nonzero(mask)
-            j = int(rng.integers(len(xs)))
-            other = warp_crop(img, crop_affine((xs[j], ys[j]), (S, S),
-                                               angle_deg=rng.uniform(0, 360)), (S, S))
-            w = rng.uniform(*d.superpos)
+            other, w = self._other_region(img, mask, inside, S, rng)
+            w = w * rng.uniform(*d.superpos)
             x = (1 - w) * x + w * other
+        if rng.random() < d.p_texture_swap:                 # fine detail re-mixed, coarse structure kept
+            other, w = self._other_region(img, mask, inside, S, rng)
+            fine = lambda z: z - cv2.GaussianBlur(z, (0, 0), d.texture_swap_mm / self.m.spacing_mm)
+            x = x + w * rng.uniform(*d.texture_swap) * (fine(other) - fine(x))
         return normalize_crop(self._blur_sharpen_noise(x, rng), rng)
+
+    def _other_region(self, img, mask, inside, S, rng):
+        """An S x S crop of another breast region (a random point, at a random angle), and the weight (S, S) it may
+        be blended in with: breast over breast only, so neither crop's skin line, background or image edge comes
+        along. The window's own border is not an edge (the breast goes on past it), so it does not fade there."""
+        ys, xs = np.nonzero(mask)
+        j = int(rng.integers(len(xs)))
+        M = crop_affine((xs[j], ys[j]), (S, S), angle_deg=rng.uniform(0, 360))
+        weight = warp_crop(self._soft(mask, edge_outside=True), M, (S, S)) * self._soft(inside, edge_outside=False)
+        return warp_crop(img, M, (S, S)), weight
+
+    def _soft(self, mask, edge_outside):
+        """_inner blurred by half of edge_margin_mm: about 0 at the skin line, 1 well inside the breast."""
+        sigma = self.d.edge_margin_mm / self.m.spacing_mm / 2
+        border = cv2.BORDER_CONSTANT if edge_outside else cv2.BORDER_REFLECT_101
+        return cv2.GaussianBlur(self._inner(mask, edge_outside).astype(np.float32), (0, 0), sigma, borderType=border)
+
+    def _inner(self, mask, edge_outside=False):
+        """The breast mask eroded by edge_margin_mm: away from the skin line, and with edge_outside from the
+        image edge too (the chest wall), which the erosion otherwise treats as breast."""
+        r = max(1, int(round(self.d.edge_margin_mm / self.m.spacing_mm)))
+        return cv2.erode(mask.astype(np.uint8), np.ones((2 * r + 1, 2 * r + 1), np.uint8),
+                         borderType=cv2.BORDER_CONSTANT, borderValue=0 if edge_outside else 1) > 0
+
+
+def _sampling_map(A, disp, t):
+    """The image point (x, y) each crop pixel u samples, A (u + d(u)) + t: (S, S, 2)."""
+    S = disp.shape[0]
+    uu, vv = np.meshgrid(np.arange(S, dtype=np.float32), np.arange(S, dtype=np.float32))
+    V = np.stack([uu + disp[..., 0], vv + disp[..., 1]], -1)
+    return V @ A.T.astype(np.float32) + t.astype(np.float32)
+
+
+def _remap(img, X, interpolation=cv2.INTER_LINEAR):
+    """img sampled at the points X (S, S, 2), zero outside it."""
+    return cv2.remap(img, np.ascontiguousarray(X[..., 0], dtype=np.float32),
+                     np.ascontiguousarray(X[..., 1], dtype=np.float32), interpolation,
+                     borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 
 
 def _bilinear(field, p):
