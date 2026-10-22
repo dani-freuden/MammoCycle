@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from src.data.records import Exam, Record, load_records, to_pairs
-from src.enums import Side, Split, View
+from src.constants import Side, Split, View
 
 
 # Columns in a different order than Column, plus one load_records should ignore.

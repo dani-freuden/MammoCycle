@@ -25,9 +25,9 @@ from PIL import Image
 from tqdm import tqdm
 from typer import Option
 
-from src.enums import Split
+from src.constants import BOX, EMBED_DATA_DIR, Split
+from src.data.lesion_pairs import DataDir, Reverse, lesion_pairs, pair_tasks
 
-from ..anatomical_coordinates.predict import BOX, DATA_DIR, lesion_pairs
 from ..anatomical_coordinates.predict import predict_box as anatomy_predict
 
 
@@ -100,21 +100,19 @@ def predict_box(task: dict) -> tuple:
 
 
 def main(
-    data_dir: Annotated[Path, Option(help='Output folder of scripts/misc/prepare_embed_dataset.py')] = Path(DATA_DIR),
+    data_dir: DataDir = EMBED_DATA_DIR,
     splits: Annotated[list[Split], Option(help='Splits to predict; repeat the option for several')]
         = [Split.TRAIN, Split.DEV, Split.TEST],
     output_dir: Annotated[Path, Option(help='Where predictions.csv goes')]
         = Path('./outputs/anatomical_coordinates_NCC'),
     search_radius: Annotated[int, Option(help='PNG pixels around the anatomy box centre to search')] = SEARCH_RADIUS,
     workers: Annotated[int, Option(help='Parallel pairs')] = 16,
+    reverse: Reverse = False,
 ):
-    pairs = lesion_pairs(data_dir, splits)
+    pairs = lesion_pairs(data_dir, splits, reverse)
     print(f'{len(pairs)} lesion pairs:', pairs.split_group.value_counts().to_dict())
 
-    tasks = [{'current_path': current_path, 'prior_path': prior_path, 'current_box': current_box,
-              'search_radius': search_radius}
-             for current_path, prior_path, current_box
-             in zip(pairs.current_path, pairs.prior_path, pairs[[f'current_{c}' for c in BOX]].values.tolist())]
+    tasks = [task | {'search_radius': search_radius} for task in pair_tasks(pairs)]
     with Pool(workers) as pool:
         predicted = np.array(list(tqdm(pool.imap(predict_box, tasks), total=len(tasks), desc='predict', unit='pair')))
     pairs[[f'anat_{c}' for c in BOX]] = np.round(predicted[:, :4], 1)

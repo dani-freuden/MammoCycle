@@ -7,7 +7,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from src.enums import Column, Side, Split, View
+from src.constants import Column, Side, Split, View
 
 
 METADATA_CSV = 'metadata.csv'

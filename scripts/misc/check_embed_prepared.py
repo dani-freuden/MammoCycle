@@ -1,7 +1,7 @@
 """Check the prepared EMBED images: is the breast where the orientation put it, and do the boxes land on tissue?
 
 For a random share of the prepared images that have boxes, the PNG is loaded and the breast found with
-breast_mask, as load_frame does with clear_background:
+breast_mask:
 1. Orientation: the breast's centroid must be in the right half, since the chest wall was put on the right edge. For
    images flipped by their PatientOrientation this checks the tag; for those where the centroid decided, it only
    checks that the prepared image agrees with the reduced copy the decision was made on.
@@ -28,8 +28,8 @@ from tqdm import tqdm
 from typer import Option
 
 from prepare_embed_dataset import GEOMETRY, GIVEN, map_box, standard_box
-from src.data.dataset import breast_mask
-from src.enums import Column
+from src.constants import EMBED_DATA_DIR, Column
+from src.utils.anatomy import breast_mask
 
 
 MIN_ON_BREAST = 0.5
@@ -67,7 +67,7 @@ def check_image(task: dict) -> tuple[bool, list[dict]]:
 
 def main(
     prepared_dir: Annotated[Path, Option(prompt=True, help='Output folder of prepare_embed_dataset.py')]
-        = Path('/data/rbg/users/dani_fr/embed_prepared_8bit'),
+        = EMBED_DATA_DIR,
     percent: Annotated[float, Option(prompt=True, help='Percent of the images with boxes to check')] = 5.0,
     workers: Annotated[int, Option(prompt=True, help='Parallel checks')] = 16,
     seed: Annotated[int, Option(prompt=True, help='Seed for sampling the images')] = 0,
