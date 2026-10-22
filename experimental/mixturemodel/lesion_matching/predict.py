@@ -12,7 +12,6 @@ Usage (from the repo root):
     python -m experimental.mixturemodel.lesion_matching.predict --workers 32
     python -m baselines.anatomical_coordinates.evaluate --output-dir outputs/b5_prior_fusion
 """
-import sys
 from multiprocessing import Pool
 from pathlib import Path
 from typing import Annotated
@@ -23,26 +22,17 @@ from PIL import Image
 from tqdm import tqdm
 from typer import Option
 
-from baselines.anatomical_coordinates.predict import BOX, DATA_DIR, lesion_pairs
 from baselines.anatomical_coordinates.predict import predict_box as anatomy_predict
-from src.data.dataset import breast_mask
-from src.enums import Split
-from src.utils.anatomy import get_centroid
+from src.constants import BOX, EMBED_DATA_DIR, SPACING_MM, Split
+from src.data.lesion_pairs import DataDir, Reverse, lesion_pairs, pair_tasks
+from src.utils.anatomy import breast_mask, get_centroid
+from src.utils.boxes import centre
 
-sys.path.insert(0, str(Path(__file__).parent))  # b5_prior_fusion imports geometry as a top-level module
-from b5_prior_fusion import (AnatomicalPrior, choose_tau, dog_filter, local_residuals_mm, log_prior_map,
+from .b5_prior_fusion import (AnatomicalPrior, choose_tau, dog_filter, local_residuals_mm, log_prior_map,
                              ncc_score_map, predict, print_table, summarize)
 
 
-# ponytail: one nominal mm per PNG pixel for every image (Hologic 0.106-0.140, GE has no PixelSpacing); resample each
-# image to a working spacing (geometry.resample_to_spacing) if the per-image spacing matters
-SPACING_MM = 0.12
 TAUS = np.logspace(-3, 0, 13)
-
-
-def centre(box) -> np.ndarray:
-    """The centre (x, y) of a box (ymin, xmin, ymax, xmax)."""
-    return np.array([box[1] + box[3], box[0] + box[2]]) / 2
 
 
 def anatomy(task: dict) -> tuple:
@@ -56,9 +46,7 @@ def load_cases(data_dir: Path, workers: int, reverse: bool = False) -> tuple:
     pairs = lesion_pairs(data_dir, list(Split), reverse)
     print(f'{len(pairs)} lesion pairs:', pairs.split_group.value_counts().to_dict())
 
-    tasks = [{'current_path': current_path, 'prior_path': prior_path, 'current_box': current_box}
-             for current_path, prior_path, current_box
-             in zip(pairs.current_path, pairs.prior_path, pairs[[f'current_{c}' for c in BOX]].values.tolist())]
+    tasks = pair_tasks(pairs)
     with Pool(workers) as pool:
         anat, centroids = zip(*tqdm(pool.imap(anatomy, tasks), total=len(tasks), desc='anatomy', unit='pair'))
     anat = np.array(anat)
@@ -125,21 +113,17 @@ def match(task: dict) -> dict:
 
 
 def main(
-    data_dir: Annotated[Path, Option(help='Output folder of scripts/misc/prepare_embed_dataset.py')] = Path(DATA_DIR),
+    data_dir: DataDir = EMBED_DATA_DIR,
     output_dir: Annotated[Path, Option(help='Where predictions.csv goes')] = Path('./outputs/b5_prior_fusion'),
     workers: Annotated[int, Option(help='Parallel pairs')] = 16,
-    reverse: Annotated[bool, Option(help='Know the earlier exam\'s box and predict the later one (the "current" '
-                                         'columns then hold the earlier exam)')] = False,
+    reverse: Reverse = False,
 ):
     pairs, anat, cases = load_cases(data_dir, workers, reverse)
     train = (pairs.split_group == str(Split.TRAIN)).values
     prior = AnatomicalPrior.fit(local_residuals_mm([c for c, t in zip(cases, train) if t], SPACING_MM))
     print('prior:', prior.describe())
 
-    tasks = [{'current_path': current_path, 'prior_path': prior_path, 'current_box': current_box, 'case': case,
-              'prior': prior}
-             for current_path, prior_path, current_box, case
-             in zip(pairs.current_path, pairs.prior_path, pairs[[f'current_{c}' for c in BOX]].values.tolist(), cases)]
+    tasks = [task | {'case': case, 'prior': prior} for task, case in zip(pair_tasks(pairs), cases)]
     with Pool(workers) as pool:
         points = list(tqdm(pool.imap(match, tasks), total=len(tasks), desc='match', unit='pair'))
 

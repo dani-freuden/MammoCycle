@@ -39,8 +39,8 @@ import cv2
 import numpy as np
 import torch
 
-from geometry import apply_affine, invert_affine, warp_crop, crop_affine
-from stepD_matcher import MatcherConfig, box_mask, normalize_crop, search_px_to_grid, grid_affine
+from .geometry import apply_affine, invert_affine, warp_crop, crop_affine
+from .stepD_matcher import MatcherConfig, box_mask, normalize_crop, search_px_to_grid, grid_affine
 
 
 @dataclass
@@ -365,7 +365,7 @@ def save_examples(ds, path, n=6, seed=0):
         gx, gy = apply_affine(grid_affine(m), s["gt_grid"].numpy()[None])[0]
         sr = cv2.cvtColor(sr, cv2.COLOR_GRAY2BGR)
         cv2.drawMarker(sr, (int(round(gx)), int(round(gy))), (0, 0, 255), cv2.MARKER_CROSS, 24, 2)
-        T, S = t.shape[0], sr.shape[0]
+        S = sr.shape[0]
         left = np.vstack([cv2.cvtColor(t, cv2.COLOR_GRAY2BGR), cv2.cvtColor(mk, cv2.COLOR_GRAY2BGR)])
         left = cv2.resize(left, (S // 2, S)) if left.shape[0] != S else left
         tiles.append(np.hstack([left, np.full((S, 6, 3), 255, np.uint8), sr]))

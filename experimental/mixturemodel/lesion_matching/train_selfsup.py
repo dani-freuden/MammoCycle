@@ -3,7 +3,7 @@ single unannotated images (selfsup.SingleImageSSLDataset), with no annotated pai
 test pairs.
 
 Training images: the CC images of all_images_dir (scripts/misc/prepare_embed_dataset.py --all-images) of patients
-outside the annotated set in data_dir, their train split. They are read, resampled from predict.SPACING_MM to
+outside the annotated set in data_dir, their train split. They are read, resampled from src.constants.SPACING_MM to
 CFG.spacing_mm and masked on the fly. The synthetic lesions' box sizes are drawn from the distinct boxes of the
 annotated train-split pairs. A frozen synthetic set from the same patients' dev split picks the epoch, by the median
 argmax error in mm; the best one is saved to output_dir/best.pt, with its MatcherConfig. ssl_examples.png shows a
@@ -23,7 +23,6 @@ Usage (from the repo root):
     python -m experimental.mixturemodel.lesion_matching.train_selfsup --checkpoint outputs/stepD_selfsup/best.pt
     python -m baselines.anatomical_coordinates.evaluate --output-dir outputs/stepD_selfsup
 """
-import sys
 from dataclasses import asdict
 from functools import partial
 from multiprocessing import Pool
@@ -37,20 +36,17 @@ import typer
 from tqdm import tqdm
 from typer import Option
 
-from baselines.anatomical_coordinates.predict import BOX, DATA_DIR, lesion_pairs
-from src.enums import Split, View
+from src.constants import BOX, EMBED_ALL_DIR, EMBED_DATA_DIR, SPACING_MM, Split, View
+from src.data.lesion_pairs import Reverse, lesion_pairs
 
-from .predict import SPACING_MM, decode_all, load_cases, write_predictions
+from .b5_prior_fusion import AnatomicalPrior, choose_tau, local_residuals_mm, print_table, sweep_tau
+from .geometry import rescale_points
+from .predict import decode_all, load_cases, write_predictions
+from .selfsup import SingleImageSSLDataset, freeze, grid_error_mm, save_examples
+from .stepD_matcher import MatcherConfig, PairDataset, SiameseMatcher, score_maps, train_matcher
 from .train_stepD import CFG, SCALE, TAUS, load_image, matcher_cases
 
-sys.path.insert(0, str(Path(__file__).parent))  # the siblings import each other as top-level modules
-from b5_prior_fusion import AnatomicalPrior, choose_tau, local_residuals_mm, print_table, sweep_tau
-from geometry import rescale_points
-from selfsup import SingleImageSSLDataset, freeze, grid_error_mm, save_examples
-from stepD_matcher import MatcherConfig, PairDataset, SiameseMatcher, score_maps, train_matcher
 
-
-ALL_IMAGES_DIR = Path('/data/rbg/users/dani_fr/embed_all_8bit')
 EVALUATED = (str(Split.DEV), str(Split.TEST))
 
 
@@ -148,9 +144,9 @@ def evaluate(model: SiameseMatcher, data_dir: Path, output_dir: Path, device: st
 
 def main(
     data_dir: Annotated[Path, Option(help='The annotated set: output folder of scripts/misc/prepare_embed_dataset.py')]
-        = Path(DATA_DIR),
+        = EMBED_DATA_DIR,
     all_images_dir: Annotated[Path, Option(help='Output folder of prepare_embed_dataset.py --all-images')]
-        = ALL_IMAGES_DIR,
+        = EMBED_ALL_DIR,
     output_dir: Annotated[Path, Option(help='Where best.pt, ssl_examples.png and predictions.csv go')]
         = Path('./outputs/stepD_selfsup'),
     checkpoint: Annotated[Path | None, Option(help='Skip training and evaluate this best.pt')] = None,
@@ -166,8 +162,7 @@ def main(
     search_px: Annotated[int, Option(help='Search window, in pixels of 0.2 mm (ignored with --checkpoint)')]
         = MatcherConfig.search_px,
     workers: Annotated[int, Option(help='Parallel pairs for the anatomy, and data loader workers')] = 16,
-    reverse: Annotated[bool, Option(help='Know the earlier exam\'s box and predict the later one (the "current" '
-                                         'columns then hold the earlier exam)')] = False,
+    reverse: Reverse = False,
 ):
     device = f'cuda:{gpu}'
     output_dir.mkdir(parents=True, exist_ok=True)

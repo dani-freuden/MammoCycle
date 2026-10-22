@@ -5,11 +5,11 @@ import torch
 import torch.nn.functional as F
 import cv2
 
-from geometry import crop_affine, warp_crop, compose, apply_affine
-from b5_prior_fusion import AnatomicalPrior, local_residuals_mm, decode, sweep_tau, choose_tau, print_table
-from stepD_matcher import (MatcherConfig, SiameseMatcher, PairDataset, grid_affine, dw_xcorr,
-                           train_matcher, score_maps, soft_target_ce)
-from synthetic import make_case
+from .geometry import crop_affine, warp_crop, compose
+from .b5_prior_fusion import AnatomicalPrior, local_residuals_mm, decode, sweep_tau, print_table
+from .stepD_matcher import (MatcherConfig, SiameseMatcher, PairDataset, grid_affine, dw_xcorr,
+                           train_matcher, score_maps)
+from .synthetic import make_case
 
 torch.set_num_threads(2)
 rng = np.random.default_rng(1)

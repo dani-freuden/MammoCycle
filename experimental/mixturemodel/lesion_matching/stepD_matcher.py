@@ -26,7 +26,6 @@ search pixel  8 * (j + (K-1)/2 - c_t) + (T-1)/2"; d cancels. See
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -35,8 +34,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 
-from b5_prior_fusion import ScoreMap
-from geometry import apply_affine, compose, crop_affine, invert_affine, warp_crop
+from .b5_prior_fusion import ScoreMap
+from .geometry import apply_affine, compose, crop_affine, invert_affine, warp_crop
 
 
 # --------------------------------------------------------------------------- #

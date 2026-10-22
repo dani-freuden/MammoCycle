@@ -21,8 +21,10 @@ from matplotlib.patches import Rectangle
 from PIL import Image
 from typer import Option
 
-from ..anatomical_coordinates.evaluate import COLORS, evaluate, iou, visualize
-from ..anatomical_coordinates.predict import BOX
+from src.constants import BOX
+from src.utils.boxes import iou
+
+from ..anatomical_coordinates.evaluate import COLORS, evaluate, visualize
 
 
 STYLES = {'current': ('-', COLORS['current']), 'prior': ('-', COLORS['prior']), 'anat': ('--', '#0a84ff'),

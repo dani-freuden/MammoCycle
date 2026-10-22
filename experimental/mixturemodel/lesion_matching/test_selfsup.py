@@ -1,15 +1,16 @@
 """Checks for self-supervised pretraining: exact ground truth, example sheet,
 and a short pretrain -> zero-shot / few-label fine-tune comparison on toy data."""
 import time
+from pathlib import Path
 import numpy as np
 import torch
 import cv2
 
-from b5_prior_fusion import AnatomicalPrior, local_residuals_mm, sweep_tau, print_table
-from geometry import apply_affine
-from stepD_matcher import MatcherConfig, SiameseMatcher, PairDataset, grid_affine, train_matcher, score_maps
-from selfsup import SingleImageSSLDataset, DeformConfig, MixedDataset, freeze, grid_error_mm, save_examples
-from synthetic import make_texture, add_blob, make_case
+from .b5_prior_fusion import AnatomicalPrior, local_residuals_mm, sweep_tau, print_table
+from .geometry import apply_affine
+from .stepD_matcher import MatcherConfig, SiameseMatcher, PairDataset, grid_affine, train_matcher, score_maps
+from .selfsup import SingleImageSSLDataset, DeformConfig, MixedDataset, freeze, grid_error_mm, save_examples
+from .synthetic import make_texture, add_blob, make_case
 
 torch.set_num_threads(2)
 rng = np.random.default_rng(0)
@@ -17,7 +18,7 @@ rng = np.random.default_rng(0)
 # ---- 1. ground truth is exact: plant a bright dot, find it in the deformed search crop ----
 # Intensity normalization is bypassed here (it clips the dot), so only geometry is tested:
 # affine + elastic + lesion growth/shrinkage, all on.
-import selfsup
+from . import selfsup
 _norm = selfsup.normalize_crop
 selfsup.normalize_crop = lambda x, rng=None: x
 cfg = MatcherConfig(pretrained=False)
@@ -60,7 +61,7 @@ def toy_image(i):
 N_IMG = 60
 ssl_train = SingleImageSSLDataset(N_IMG, toy_image, small, epoch_len=2400)
 ssl_val = freeze(SingleImageSSLDataset(N_IMG, toy_image, small, fixed_seed=12345), 64)
-save_examples(SingleImageSSLDataset(N_IMG, toy_image, small), "ssl_examples.png", n=4)
+save_examples(SingleImageSSLDataset(N_IMG, toy_image, small), str(Path(__file__).with_name("ssl_examples.png")), n=4)
 t0 = time.time(); [ssl_train[i] for i in range(32)]
 print(f"sample generation: {(time.time() - t0) / 32 * 1000:.0f} ms/sample (small config)")
 

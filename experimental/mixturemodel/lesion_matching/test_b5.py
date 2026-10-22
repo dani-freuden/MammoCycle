@@ -1,9 +1,9 @@
 """Synthetic check of B5: fit prior on train, pick tau on val, report on test."""
 import numpy as np
-from geometry import crop_affine, warp_crop, apply_affine, invert_affine, compose
-from b5_prior_fusion import (AnatomicalPrior, local_residuals_mm, dog_filter, ncc_score_map,
+from .geometry import crop_affine, warp_crop, apply_affine, invert_affine, compose
+from .b5_prior_fusion import (AnatomicalPrior, local_residuals_mm, dog_filter, ncc_score_map,
                              sweep_tau, choose_tau, print_table, predict, summarize, bootstrap_ci)
-from synthetic import make_case
+from .synthetic import make_case
 
 SP = 0.2
 rng = np.random.default_rng(0)

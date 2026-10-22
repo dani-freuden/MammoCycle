@@ -1,8 +1,8 @@
 """The vectorized anatomical coordinates against the per-point functions, on a synthetic CC breast."""
 import numpy as np
 
-from src.utils.anatomy import (anatomical_coords, anatomical_map, boundary_radii, get_breast_mask, get_centroid,
-                               get_nipple_jas_cc, image_coords, to_anatomical_coords)
+from src.utils.anatomy import (anatomical_coords, boundary_radii, get_breast_mask, get_centroid, get_nipple_jas_cc,
+                               image_coords, to_anatomical_coords)
 
 
 def cc_breast(height=512, width=320):
@@ -51,14 +51,3 @@ def test_rays_into_the_chest_wall_end_at_the_mirrored_skin_line():
 
     assert np.isclose(np.hypot(*to_anatomical_coords(edge, mask, centroid, nipple)), rho, atol=0.01)
     assert np.isclose(np.hypot(*anatomical_coords(np.array([edge]), mask, centroid, nipple)[0]), rho, atol=0.01)
-
-
-def test_map_holds_the_coordinates_of_the_cell_centres():
-    image = cc_breast()
-    mask, centroid, nipple = landmarks(image)
-    anatomy = anatomical_map(image, stride=8)
-
-    assert anatomy.shape == (2, 64, 40) and anatomy.dtype == np.float32
-    for row, column in [(0, 0), (10, 30), (32, 20), (50, 39), (63, 5)]:
-        center = ((column + 0.5) * 8 - 0.5, (row + 0.5) * 8 - 0.5)  # tracker convention, in index coordinates
-        assert np.allclose(anatomy[:, row, column], to_anatomical_coords(center, mask, centroid, nipple), atol=0.01)

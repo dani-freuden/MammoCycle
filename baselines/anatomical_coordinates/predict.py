@@ -14,65 +14,26 @@ Usage:
     python -m baselines.anatomical_coordinates.predict
     python -m baselines.anatomical_coordinates.predict --splits dev --splits test --workers 32
 """
-import os
 from multiprocessing import Pool
 from pathlib import Path
 from typing import Annotated
 
 import numpy as np
-import pandas as pd
 import typer
-from dotenv import load_dotenv
 from PIL import Image
 from tqdm import tqdm
 from typer import Option
 
-from src.data.dataset import breast_mask
-from src.data.records import load_records, to_pairs
-from src.enums import Split, View
-from src.utils.anatomy import get_centroid, get_nipple_jas_cc, map_prior_to_current
-
-
-load_dotenv()
-DATA_DIR = os.getenv('EMBED_DATA_DIR')
-
-OUTLINE_STEP = 8  # PNG pixels between the points mapped along each edge of a box
-BOX = ['ymin', 'xmin', 'ymax', 'xmax']
+from src.constants import BOX, EMBED_DATA_DIR, Split
+from src.data.lesion_pairs import DataDir, Reverse, lesion_pairs, pair_tasks
+from src.utils.anatomy import BreastAnatomy
+from src.utils.boxes import box_outline
 
 
 def predict_single_pair(source_image, target_image, source_points):
     """Map points (x, y) on source_image into target_image through anatomical coordinates."""
-    source_mask = breast_mask(source_image)
-    target_mask = breast_mask(target_image)
-    source_centroid = get_centroid(source_mask)
-    target_centroid = get_centroid(target_mask)
-    source_nipple = get_nipple_jas_cc(source_mask, source_centroid)
-    target_nipple = get_nipple_jas_cc(target_mask, target_centroid)
-
-    mapped_points = []
-    for point in source_points:
-        # map_prior_to_current maps from any image into any other, despite its name.
-        mapped_points.append(map_prior_to_current(
-            point,
-            source_mask,
-            target_mask,
-            source_centroid,
-            target_centroid,
-            source_nipple,
-            target_nipple
-        ))
-    return mapped_points
-
-
-def box_outline(box, step: float = OUTLINE_STEP) -> list[tuple[float, float]]:
-    """Points (x, y) around a box (ymin, xmin, ymax, xmax), clockwise from the top left corner, at most step apart,
-    each corner once."""
-    ymin, xmin, ymax, xmax = box
-    xs = np.linspace(xmin, xmax, int(np.ceil((xmax - xmin) / step)) + 1)
-    ys = np.linspace(ymin, ymax, int(np.ceil((ymax - ymin) / step)) + 1)
-
-    return ([(x, ymin) for x in xs] + [(xmax, y) for y in ys[1:]]
-            + [(x, ymax) for x in xs[-2::-1]] + [(xmin, y) for y in ys[-2:0:-1]])
+    source, target = BreastAnatomy.of(source_image), BreastAnatomy.of(target_image)
+    return [source.map_to(target, point) for point in source_points]
 
 
 def predict_box(task: dict) -> tuple:
@@ -84,57 +45,19 @@ def predict_box(task: dict) -> tuple:
     return ymin, xmin, ymax, xmax
 
 
-def lesion_pairs(data_dir: Path, splits: list[Split], reverse: bool = False) -> pd.DataFrame:
-    """One row per pair of CC exams of a breast, a later (current) and an earlier (prior) one, and mammotracker lesion
-    boxed in both exams. With reverse the roles swap: the earlier exam is the current one, whose box is known, and the
-    later one is the prior, where the box is predicted."""
-    metadata = pd.read_csv(data_dir / 'metadata.csv', dtype={'patient_id': str, 'exam_id': str, 'sop_uid': str})
-    metadata['mm_per_pixel'] = metadata.pixel_spacing * metadata.cols / metadata.resized_width
-    boxes = pd.read_csv(data_dir / 'boxes.csv', dtype={'sop_uid': str})
-    boxes = (boxes[boxes.source == 'mammotracker']
-             .merge(metadata[['sop_uid', 'exam_id', 'laterality', 'mm_per_pixel']], on='sop_uid')
-             .rename(columns={f'png_{c}': c for c in BOX}))
-    by_image = {key: group[['lesion_id', 'kind', 'mm_per_pixel', *BOX]]
-                for key, group in boxes.groupby(['exam_id', 'laterality'])}
-
-    rows = []
-    for split, records in load_records(data_dir, splits, View.CC).items():
-        for record in to_pairs(records):
-            prior, current = record.exams[::-1] if reverse else record.exams
-            prior_boxes, current_boxes = (by_image.get((exam.exam_id, str(record.side))) for exam in (prior, current))
-            if prior_boxes is None or current_boxes is None:
-                continue
-
-            shared = prior_boxes.merge(current_boxes, on='lesion_id', suffixes=('_prior', '_current'))
-            for lesion in shared.to_dict('records'):
-                rows.append({'split_group': str(split), 'patient_id': record.patient_id, 'laterality': str(record.side),
-                             'lesion_id': lesion['lesion_id'], 'kind': lesion['kind_current'],
-                             'prior_exam_id': prior.exam_id, 'prior_date': prior.date,
-                             'current_exam_id': current.exam_id, 'current_date': current.date,
-                             'prior_path': str(prior.path), 'current_path': str(current.path),
-                             **{f'prior_{c}': lesion[f'{c}_prior'] for c in BOX},
-                             **{f'current_{c}': lesion[f'{c}_current'] for c in BOX},
-                             'prior_mm_per_pixel': lesion['mm_per_pixel_prior']})
-
-    return pd.DataFrame(rows)
-
-
 def main(
-    data_dir: Annotated[Path, Option(help='Output folder of scripts/misc/prepare_embed_dataset.py')] = Path(DATA_DIR),
+    data_dir: DataDir = EMBED_DATA_DIR,
     splits: Annotated[list[Split], Option(help='Splits to predict; repeat the option for several')]
         = [Split.TRAIN, Split.DEV, Split.TEST],
     output_dir: Annotated[Path, Option(help='Where predictions.csv goes')]
         = Path('./outputs/anatomical_coordinates'),
     workers: Annotated[int, Option(help='Parallel pairs')] = 16,
-    reverse: Annotated[bool, Option(help='Know the earlier exam\'s box and predict the later one (the "current" '
-                                         'columns then hold the earlier exam)')] = False,
+    reverse: Reverse = False,
 ):
     pairs = lesion_pairs(data_dir, splits, reverse)
     print(f'{len(pairs)} lesion pairs:', pairs.split_group.value_counts().to_dict())
 
-    tasks = [{'current_path': current_path, 'prior_path': prior_path, 'current_box': current_box}
-             for current_path, prior_path, current_box
-             in zip(pairs.current_path, pairs.prior_path, pairs[[f'current_{c}' for c in BOX]].values.tolist())]
+    tasks = pair_tasks(pairs)
     with Pool(workers) as pool:
         predicted = list(tqdm(pool.imap(predict_box, tasks), total=len(tasks), desc='predict', unit='pair'))
     pairs[[f'pred_{c}' for c in BOX]] = np.round(predicted, 1)

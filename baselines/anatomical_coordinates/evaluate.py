@@ -36,28 +36,15 @@ from PIL import Image
 from tqdm import tqdm
 from typer import Option
 
-from src.enums import Split
+from src.constants import BOX, ID_DTYPES, Split
+from src.utils.boxes import box_outline, centre_distance, iou
 
-from .predict import BOX, box_outline, predict_single_pair
+from .predict import predict_single_pair
 
 
 BIN_WIDTH = 0.2
 SEED = 0  # for sampling the pairs to draw, so reruns draw the same ones
 COLORS = {'current': '#ffd60a', 'prior': '#34c759', 'pred': '#ff3b30'}
-
-
-def iou(a, b) -> float:
-    """Intersection over union of two boxes (ymin, xmin, ymax, xmax)."""
-    height = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
-    width = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
-    area = lambda box: (box[2] - box[0]) * (box[3] - box[1])
-
-    return height * width / (area(a) + area(b) - height * width)
-
-
-def centre_distance(a, b) -> float:
-    """Distance between the centres of two boxes (ymin, xmin, ymax, xmax), in their pixels."""
-    return np.hypot((a[0] + a[2] - b[0] - b[2]) / 2, (a[1] + a[3] - b[1] - b[3]) / 2)
 
 
 def summarise(pairs: pd.DataFrame) -> dict:
@@ -151,8 +138,7 @@ def plot_against_gap(predictions: pd.DataFrame, path: Path):
 
 def evaluate(output_dir: Path) -> pd.DataFrame:
     """Score output_dir/predictions.csv, print the tables and write evaluation.csv next to it."""
-    ids = {'patient_id': str, 'prior_exam_id': str, 'current_exam_id': str}
-    predictions = pd.read_csv(output_dir / 'predictions.csv', dtype=ids)
+    predictions = pd.read_csv(output_dir / 'predictions.csv', dtype=ID_DTYPES)
     predicted = predictions[[f'pred_{c}' for c in BOX]].values
     true = predictions[[f'prior_{c}' for c in BOX]].values
     predictions['iou'] = [iou(p, t) for p, t in zip(predicted, true)]

@@ -1,26 +1,23 @@
+from dataclasses import dataclass
+
 import cv2
 import numpy as np
-from enum import Enum
-
-import torch
-
-from src.enums import View
 
 
+def breast_mask(image: np.ndarray) -> np.ndarray:
+    """The breast in an 8-bit image: the largest contour of a triangle threshold, filled, as a boolean mask.
 
+    The triangle method puts the threshold at the foot of the dominant histogram peak, the background, so it adapts
+    when the background is not at zero. Otsu does not do here: on about a quarter of the EMBED images its threshold
+    falls inside the breast and leaves out the fat and the skin.
+    """
+    _, binary = cv2.threshold(image, 0, 1, cv2.THRESH_BINARY + cv2.THRESH_TRIANGLE)
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    mask = np.zeros_like(binary)
+    cv2.drawContours(mask, [max(contours, key=cv2.contourArea)], -1, 1, thickness=cv2.FILLED)
 
-class NippleStrategy(Enum):
-    NAIVE = 'naive'
-    JAS_CC = 'jas_cc'
+    return mask.astype(bool)
 
-class FrameKeys(Enum):
-    NIPPLE = 'nipple'
-    CENTROID = 'centroid'
-    HEIGHT = 'height'
-    U = 'u'
-    V = 'v'
-    D = 'd' 
-    
 
 def get_breast_mask(img, thres= 0.01):
     
@@ -47,39 +44,6 @@ def get_centroid(binary_img: np.ndarray):
     cy = int(moments["m01"] / moments["m00"])
     return cx, cy
 
-
-def get_nipple_naive(mask,centroid):
-    cx, cy = centroid
-    contours, _ = cv2.findContours(
-        mask.astype(np.uint8),
-        cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_NONE,
-    )
-    
-    contour = max(contours, key=cv2.contourArea)[:, 0, :]  # [N, 2], x/y
-
-
-    
-    ys = np.where(mask)[0]
-    breast_height = ys.max() - ys.min()
-
-    window = 0.25 * breast_height
-
-    candidates = contour[
-        np.abs(contour[:, 1] - cy) < window
-    ]
-
-    nipple = candidates[np.argmin(candidates[:, 0])]
-    x = contour[:, 0]
-    y = contour[:, 1]
-
-    x_norm = (x.max() - x) / (x.max() - x.min())
-    y_penalty = np.abs(y - cy) / breast_height
-
-    score = x_norm - 0.5 * y_penalty
-
-    nipple = contour[np.argmax(score)]
-    return nipple
 
 def get_nipple_jas_cc(mask, centroid, chest_wall="right",
                   strip_width=3, search_band_fraction=0.20):
@@ -245,81 +209,6 @@ def from_anatomical_coords(a, mask, centroid, nipple):
 
     return c + rho * boundary_r * direction
 
-def map_prior_to_current(
-    point,
-    prior_mask,
-    current_mask,
-    prior_centroid,
-    current_centroid,
-    prior_nipple,
-    current_nipple,
-):
-    a = to_anatomical_coords(
-        point,
-        prior_mask,
-        prior_centroid,
-        prior_nipple,
-    )
-
-    return from_anatomical_coords(
-        a,
-        current_mask,
-        current_centroid,
-        current_nipple,
-    )
-    
-    
-def anatomical_frame_uv(centroid, nipple):
-    c = np.asarray(centroid, dtype=float)
-    n = np.asarray(nipple, dtype=float)
-
-    delta = n - c
-    d = np.linalg.norm(delta)
-
-    if d < 1e-8:
-        raise ValueError("Nipple and centroid are too close")
-
-    u = delta / d
-
-    # perpendicular
-    v = np.array([-u[1], u[0]])
-
-    # make v point visually upward in image coordinates
-    if v[1] > 0:
-        v = -v
-
-    return {
-        "centroid": c,
-        "u": u,
-        "v": v,
-        "scale": d,
-    }
-    
-    
-def to_anatomical_uv(point, frame_uv):
-    p = np.asarray(point, dtype=float)
-
-    q = p - frame_uv["centroid"]
-    d = frame_uv["scale"]
-
-    return np.array([
-        np.dot(q, frame_uv["u"]) / d,
-        np.dot(q, frame_uv["v"]) / d,
-    ])
-    
-def from_anatomical_uv(a, frame):
-    a = np.asarray(a, dtype=float)
-
-    return (
-        frame["centroid"]
-        + frame["scale"]
-        * (
-            a[0] * frame["u"]
-            + a[1] * frame["v"]
-        )
-    )
-    
-
 def boundary_radii(mask, centroid, num_angles, step=0.5):
     """get_boundary_radius in num_angles directions at once, direction k at angle 2 pi k / num_angles (y down).
 
@@ -373,19 +262,26 @@ def image_coords(a, centroid, nipple, radii):
     return c + distance[..., None] * np.stack([np.cos(angle), np.sin(angle)], axis=-1)
 
 
-def anatomical_map(image, stride, threshold=0.01):
-    """Anatomical coordinates of every stride x stride cell centre of a CC image [H, W] -> [2, H / stride, W / stride].
+@dataclass(frozen=True)
+class BreastAnatomy:
+    """The frame of an 8-bit CC image's anatomical coordinates, chest wall on the right: its breast mask, centroid and
+    jas_cc nipple."""
+    mask: np.ndarray
+    centroid: tuple
+    nipple: tuple
 
-    CC only: the nipple search and the mirrored boundary assume a CC view with the chest wall on the right. Cell
-    centres follow the tracker's convention (pixel i covers [i, i + 1)), half a pixel off the index coordinates used
-    here.
-    """
-    mask = get_breast_mask(image, threshold)
-    centroid = get_centroid(mask)
-    nipple = get_nipple_jas_cc(mask, centroid)
+    @classmethod
+    def of(cls, image: np.ndarray) -> 'BreastAnatomy':
+        mask = breast_mask(image)
+        centroid = get_centroid(mask)
+        return cls(mask, centroid, get_nipple_jas_cc(mask, centroid))
 
-    rows, columns = image.shape[0] // stride, image.shape[1] // stride
-    y, x = np.mgrid[:rows, :columns]
-    centers = (np.stack([x, y], axis=-1).reshape(-1, 2) + 0.5) * stride - 0.5
+    def to_anatomical(self, point) -> np.ndarray:
+        return to_anatomical_coords(point, self.mask, self.centroid, self.nipple)
 
-    return anatomical_coords(centers, mask, centroid, nipple).T.reshape(2, rows, columns).astype(np.float32)
+    def from_anatomical(self, a) -> np.ndarray:
+        return from_anatomical_coords(a, self.mask, self.centroid, self.nipple)
+
+    def map_to(self, other: 'BreastAnatomy', point) -> np.ndarray:
+        """Where a point (x, y) of this image lands in the other one, through anatomical coordinates."""
+        return other.from_anatomical(self.to_anatomical(point))

@@ -73,7 +73,7 @@ def invert_point(d, p, n_iter=50):
 
 def make_case(rng, spacing_mm=0.2, h=600, w=500, lesion_sd_mm=3.0, lesion_amp=1.5,
               superpos=0.7, anat_mu=(-3.0, 0.0), anat_sd=(5.0, 9.0), p_outlier=0.1):
-    from geometry import local_frame
+    from .geometry import local_frame
     cur = make_texture(h, w, rng, scales_px=tuple(v * 0.2 / spacing_mm for v in (2, 6, 15, 40)))
     margin = 0.2 * min(h, w)
     p_cur = np.array([rng.uniform(margin, w - margin), rng.uniform(margin, h - margin)])

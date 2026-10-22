@@ -1,10 +1,10 @@
 """Train the Step D matcher (stepD_matcher.SiameseMatcher) on the EMBED CC lesion pairs, then predict every pair.
 
 Same pairs, anatomy boxes and prior fusion as predict.py (B5), with the network's log p(cell | appearance) in place of
-NCC. The PNGs are resampled once from predict.SPACING_MM to CFG.spacing_mm and kept in memory with their breast masks.
-Train pairs are used in both directions, since both boxes are known. After every epoch the dev pairs are scored with
-the search window on p_anat and fused with the prior over TAUS; the epoch with the best truncated mean at its best tau
-is saved to output_dir/best.pt. That model then predicts every pair, tau is chosen on dev again, and predictions.csv
+NCC. The PNGs are resampled once from src.constants.SPACING_MM to CFG.spacing_mm and kept in memory with their breast
+masks. Train pairs are used in both directions, since both boxes are known. After every epoch the dev pairs are scored
+with the search window on p_anat and fused with the prior over TAUS; the epoch with the best truncated mean at its best
+tau is saved to output_dir/best.pt. That model then predicts every pair, tau is chosen on dev again, and predictions.csv
 is written as predict.py writes it. The network starts from ImageNet, or with --init from a best.pt (e.g. a
 self-supervised one), whose MatcherConfig (kernel, search window) it then keeps; --checkpoint keeps its own too.
 
@@ -14,7 +14,6 @@ Usage (from the repo root):
     python -m experimental.mixturemodel.lesion_matching.train_stepD --init outputs/stepD_selfsup_k31/best.pt \
         --output-dir outputs/stepD_k31_finetune --gpu 0 --workers 32
 """
-import sys
 from dataclasses import asdict
 from multiprocessing import Pool
 from pathlib import Path
@@ -27,16 +26,15 @@ from PIL import Image
 from tqdm import tqdm
 from typer import Option
 
-from baselines.anatomical_coordinates.predict import BOX, DATA_DIR
-from src.data.dataset import breast_mask
-from src.enums import Split
+from src.constants import BOX, EMBED_DATA_DIR, SPACING_MM, Split
+from src.data.lesion_pairs import DataDir, Reverse
+from src.utils.anatomy import breast_mask
+from src.utils.boxes import centre
 
-from .predict import SPACING_MM, centre, decode_all, load_cases, report, write_predictions
-
-sys.path.insert(0, str(Path(__file__).parent))  # stepD_matcher imports its siblings as top-level modules
-from b5_prior_fusion import AnatomicalPrior, choose_tau, local_residuals_mm, print_table, sweep_tau
-from geometry import rescale_points, resample_to_spacing
-from stepD_matcher import MatcherConfig, PairDataset, SiameseMatcher, score_maps, train_matcher
+from .b5_prior_fusion import AnatomicalPrior, choose_tau, local_residuals_mm, print_table, sweep_tau
+from .geometry import rescale_points, resample_to_spacing
+from .predict import decode_all, load_cases, report, write_predictions
+from .stepD_matcher import MatcherConfig, PairDataset, SiameseMatcher, score_maps, train_matcher
 
 
 CFG = MatcherConfig()
@@ -65,7 +63,7 @@ def matcher_cases(pairs, cases: list, images: dict) -> list:
 
 
 def main(
-    data_dir: Annotated[Path, Option(help='Output folder of scripts/misc/prepare_embed_dataset.py')] = Path(DATA_DIR),
+    data_dir: DataDir = EMBED_DATA_DIR,
     output_dir: Annotated[Path, Option(help='Where best.pt and predictions.csv go')]
         = Path('./outputs/stepD_matcher'),
     gpu: Annotated[int, Option(help='CUDA device')] = 0,
@@ -77,8 +75,7 @@ def main(
     checkpoint: Annotated[Path | None, Option(help='Skip training and predict with this best.pt')] = None,
     init: Annotated[Path | None, Option(help='Fine-tune from this best.pt, with its MatcherConfig (e.g. '
                                              'outputs/stepD_selfsup_k31/best.pt)')] = None,
-    reverse: Annotated[bool, Option(help='Know the earlier exam\'s box and predict the later one (the "current" '
-                                         'columns then hold the earlier exam)')] = False,
+    reverse: Reverse = False,
 ):
     start = torch.load(checkpoint or init, map_location='cpu') if checkpoint or init else None
     cfg = MatcherConfig(**start['cfg']) if start else CFG  # the kernel and window go with the weights

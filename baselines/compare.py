@@ -23,18 +23,19 @@ import pandas as pd
 import typer
 from typer import Argument, Option
 
+from src.constants import ID_DTYPES, PAIR_KEY
+
 from .anatomical_coordinates.evaluate import summarise
 
 
-PAIR = ['patient_id', 'laterality', 'lesion_id', 'prior_exam_id', 'current_exam_id']  # identifies a row
 COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948']
 MAX_MM = 40  # the precision panel's range
 
 
 def load(folders: list[Path]) -> dict[str, pd.DataFrame]:
     """Each folder's evaluation.csv by the folder's name, cut to the pairs found in all of them."""
-    ids = {'patient_id': str, 'prior_exam_id': str, 'current_exam_id': str}
-    evaluations = {folder.name: pd.read_csv(folder / 'evaluation.csv', dtype=ids).set_index(PAIR) for folder in folders}
+    evaluations = {folder.name: pd.read_csv(folder / 'evaluation.csv', dtype=ID_DTYPES).set_index(PAIR_KEY)
+                   for folder in folders}
     common = reduce(pd.Index.intersection, [evaluation.index for evaluation in evaluations.values()])
     for name, evaluation in evaluations.items():
         if len(evaluation) > len(common):

@@ -37,7 +37,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from geometry import (apply_affine, compose, crop_affine, local_frame,
+from .geometry import (apply_affine, compose, crop_affine, local_frame,
                       to_local_mm, warp_crop)
 
 

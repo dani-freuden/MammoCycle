@@ -28,7 +28,7 @@ PNGs that already exist are not converted again. dcmj2pnm must be on PATH (conda
 Usage:
     python scripts/misc/prepare_embed_dataset.py   # prompts for every option but --splits-from
     python scripts/misc/prepare_embed_dataset.py --workers 32
-    python scripts/misc/prepare_embed_dataset.py --all-images --out-dir /data/rbg/users/dani_fr/embed_all_8bit
+    python scripts/misc/prepare_embed_dataset.py --all-images --out-dir $EMBED_ALL_DIR
 """
 import ast
 import os
@@ -48,8 +48,8 @@ from PIL import Image
 from tqdm import tqdm
 from typer import Option
 
-from src.data.dataset import breast_mask
-from src.enums import Column, Split
+from src.constants import EMBED_DATA_DIR, EMBED_ROOT, MAMMOTRACKER_CSV_DIR, Column, Split
+from src.utils.anatomy import breast_mask
 
 
 HEIGHT, WIDTH = 2048, 1664
@@ -229,17 +229,17 @@ def map_box(box, rows: int, cols: int, resized_height: int, resized_width: int, 
 
 def main(
     embed_root: Annotated[Path, Option(prompt=True, help='EMBED Open Data root, with tables/ and images/')]
-        = Path('/data/rbg/shared/datasets/EMBED'),
+        = EMBED_ROOT,
     mammotracker_dir: Annotated[Path, Option(prompt=True, help='Folder with the mammotracker ROI CSVs')]
-        = Path('/data/rbg/users/dani_fr/projects/mammo_track/debug/5cases/mammotracker_csvs'),
+        = MAMMOTRACKER_CSV_DIR,
     out_dir: Annotated[Path, Option(prompt=True, help='Where the PNGs and CSVs go')]
-        = Path('/data/rbg/users/dani_fr/embed_prepared_8bit'),
+        = EMBED_DATA_DIR,
     all_images: Annotated[bool, Option(prompt=True, help='One 2D image per exam, breast and view (CC and MLO), '
                                                          'annotated or not')]
         = False,
     splits_from: Annotated[Path, Option(help='With --all-images: the annotated metadata.csv, whose patients keep '
                                              'their split')]
-        = Path('/data/rbg/users/dani_fr/embed_prepared_8bit/metadata.csv'),
+        = EMBED_DATA_DIR / 'metadata.csv',
     workers: Annotated[int, Option(prompt=True, help='Parallel conversions')] = 32,
     seed: Annotated[int, Option(prompt=True, help='Seed for the patient split')] = 0,
 ):

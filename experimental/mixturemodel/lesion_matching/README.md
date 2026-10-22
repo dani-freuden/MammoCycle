@@ -7,7 +7,7 @@
 | `stepD_matcher.py` | Siamese matcher (ResNet-18, depthwise xcorr, heatmap head), soft-target CE loss, pair sampler with jitter/augmentation, training loop, score maps for fusion, zero-shot deep-feature score map |
 | `selfsup.py` | Self-supervised pairs from single images: random deformation (affine, elastic, lesion growth) + appearance changes, exact ground truth; `MixedDataset` for fine-tuning; `save_examples` contact sheet; `grid_error_mm` |
 | `synthetic.py` | Toy pairs with known correspondence (unit tests; also the template for self-supervised pretraining on real single images) |
-| `test_b5.py`, `test_stepD.py`, `test_selfsup.py` | End-to-end checks on toy data (run each with `python`) |
+| `test_b5.py`, `test_stepD.py`, `test_selfsup.py` | End-to-end checks on toy data (run each from the repo root, e.g. `python -m experimental.mixturemodel.lesion_matching.test_b5`) |
 
 ## Plugging in your data
 
@@ -36,7 +36,7 @@ mammograms.
 ## Self-supervised pretraining from single images
 
 ```python
-from selfsup import SingleImageSSLDataset, DeformConfig, MixedDataset, freeze, save_examples
+from experimental.mixturemodel.lesion_matching.selfsup import SingleImageSSLDataset, DeformConfig, MixedDataset, freeze, save_examples
 
 def load(i):                        # from your cache, at the working spacing
     return {"img": img_i, "mask": breast_mask_i, "boxes": [(cx, cy, w, h), ...]}  # boxes optional
